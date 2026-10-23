@@ -3,6 +3,7 @@ import { guessFieldKey, shouldFillExistingValue } from "../shared/field-matching
 import { createFillHistory } from "../shared/fill-history";
 import { getSiteAdapter } from "../shared/site-adapters";
 import { validateFieldValue } from "../shared/field-value-validation";
+import { sanitizePageUrl } from "../shared/privacy";
 
 export type DomEngine = {
   scan(): DetectedField[];
@@ -86,7 +87,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
       element.dataset.offerStarFieldId = id;
       return { id, key: guess.key, label, type: element.tagName.toLowerCase(), elementIndex, confidence: guess.confidence };
     });
-    console.info("[Offer Star][Content] 页面扫描完成", { 站点: adapter.name, 字段数量: result.length, 页面地址: pageUrl });
+    console.info("[Offer Star][Content] 页面扫描完成", { 站点: adapter.name, 字段数量: result.length, 页面地址: sanitizePageUrl(pageUrl) });
     return result;
   }
 

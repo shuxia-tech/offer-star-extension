@@ -2,11 +2,11 @@ import { spawn } from "node:child_process";
 import http from "node:http";
 import net from "node:net";
 import { fileURLToPath } from "node:url";
+import { resolveBrowserExecutable } from "./browser-executable.mjs";
+import { readFirefoxDebugPort } from "./firefox-debug-port.mjs";
 
 const viteEntrypoint = fileURLToPath(new URL("../node_modules/vite/bin/vite.js", import.meta.url));
 const webExtEntrypoint = fileURLToPath(new URL("../node_modules/web-ext/bin/web-ext.js", import.meta.url));
-const firefoxBinary = process.env.FIREFOX_EXECUTABLE_PATH || "C:\\Program Files\\Mozilla Firefox\\firefox.exe";
-const debugPort = Number(process.env.FIREFOX_FIXTURE_DEBUG_PORT || 9876);
 const pagePort = Number(process.env.FIREFOX_FIXTURE_PAGE_PORT || 4173);
 const pageUrl = `http://127.0.0.1:${pagePort}/simple.html`;
 const selectorList = process.env.FIREFOX_FIXTURE_SELECTORS || "input[name=\"name\"],input[name=\"phone\"],input[name=\"email\"]";
@@ -16,6 +16,7 @@ function start(executable, args, label) {
   const child = spawn(executable, args, {
     cwd: process.cwd(),
     shell: false,
+    detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true
   });
@@ -53,9 +54,9 @@ function httpReady() {
   });
 }
 
-function tcpReady() {
+function tcpReady(port) {
   return new Promise((resolve) => {
-    const socket = net.createConnection({ host: "127.0.0.1", port: debugPort });
+    const socket = net.createConnection({ host: "127.0.0.1", port });
     socket.once("connect", () => { socket.destroy(); resolve(true); });
     socket.once("error", () => resolve(false));
   });
@@ -66,19 +67,26 @@ function stopProcessTree(child) {
   if (process.platform === "win32") {
     spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
   } else {
-    child.kill("SIGINT");
+    try { process.kill(-child.pid, "SIGTERM"); } catch { child.kill("SIGTERM"); }
   }
 }
 
 async function main() {
-  const vite = start(process.execPath, [viteEntrypoint, "--host", "127.0.0.1", "--port", String(pagePort), "--strictPort", "--config", "vite.test.config.ts"], "Vite 测试页");
+  const firefoxBinary = resolveBrowserExecutable("firefox");
+  start(process.execPath, [viteEntrypoint, "--host", "127.0.0.1", "--port", String(pagePort), "--strictPort", "--config", "vite.test.config.ts"], "Vite 测试页");
   await waitFor(httpReady, 15000, "Vite 测试页启动超时");
 
   const firefox = start(process.execPath, [
     webExtEntrypoint, "run", "--source-dir", ".output/firefox-mv2", "--firefox-binary", firefoxBinary,
-    "--start-url", pageUrl, "--no-input", "--no-reload", `--args=-start-debugger-server`, `--args=${debugPort}`
+    "--start-url", pageUrl, "--no-input", "--no-reload", "--verbose"
   ], "Firefox 临时运行时");
-  await waitFor(tcpReady, 30000, "Firefox 调试端口启动超时");
+  const runtime = children.find((item) => item.child === firefox);
+  let debugPort;
+  await waitFor(async () => {
+    const output = runtime.getOutput();
+    debugPort = readFirefoxDebugPort(output);
+    return debugPort && /Installed .* as a temporary add-on/i.test(output) && await tcpReady(debugPort);
+  }, 30000, "Firefox 调试端口或临时扩展安装超时");
 
   const smoke = spawn(process.execPath, ["scripts/firefox-page-smoke.mjs"], {
     cwd: process.cwd(),

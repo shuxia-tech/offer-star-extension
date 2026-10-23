@@ -18,7 +18,7 @@ describe("悬浮面板视觉契约", () => {
   it("登录状态检查期间显示骨架加载样式", () => {
     expect(styles).toContain('.resume-card[aria-busy="true"]');
     expect(styles).toContain(".resume-loading");
-    expect(styles).toContain(".loading-spinner");
+    expect(styles).toContain(".loading-bar");
   });
 
   it("AI 分析期间显示按钮动效", () => {
@@ -28,7 +28,7 @@ describe("悬浮面板视觉契约", () => {
 
   it("安全验证状态使用独立的警示色", () => {
     expect(styles).toContain(".status-security");
-    expect(styles).toContain(".status-security .status-dot");
+    expect(styles).toContain("background: #fff8e8");
   });
 
   it("页面上下文卡片会区分待填写、已填写和需验证状态", () => {
@@ -41,8 +41,8 @@ describe("悬浮面板视觉契约", () => {
     expect(styles).toContain(".empty-scan-copy");
   });
 
-  it("窄屏面板禁止横向滚动并重新排列头部操作", () => {
+  it("窄屏面板禁止横向滚动并让主要操作改为单列", () => {
     expect(styles).toContain("overflow-x: hidden");
-    expect(styles).toContain(".resume-preview-button { grid-column: 2 / span 2; grid-row: 2; justify-self: end; }");
+    expect(styles).toContain(".primary-actions { flex-direction: column; }");
   });
 });

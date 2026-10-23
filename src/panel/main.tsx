@@ -1,13 +1,14 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { AiAnalysisResult, DetectedField, FieldKey, FilePayload, ResumeProfile, ResumeSummary } from "../shared/messages";
+import type { AiAnalysisResult, DetectedField, FieldKey, FilePayload, ResumeProfile, ResumeSummary, UserProfile } from "../shared/messages";
 import { browser } from "wxt/browser";
 import { getSiteAdapter } from "../shared/site-adapters";
 import { applyAiMappings, applyManualFieldConfirmation, filterValuesByConfidence } from "../shared/ai-mapping";
 import { buildResumeFieldValues } from "../shared/fill-values";
 import { draftOverridesFromResult, rejectDraft } from "../shared/draft-state";
-import { getStalePageMessage } from "./page-guards";
-import { clearResumeSessionState } from "../shared/auth-session";
+import { FORM_UPDATED_NOTICE, LOGIN_FORM_NOTICE_SUPPRESS_MS, formNoticeAfterLogin, getStalePageMessage, shouldSuppressFormNotice } from "./page-guards";
+import { shouldAcceptPageChangeForPanel, shouldReportPageChange } from "../shared/page-change-routing";
+import { clearResumeSessionState, shouldResetSessionOnPoll } from "../shared/auth-session";
 import { buildFillPreview } from "../shared/fill-preview";
 import { normalizeFillMode, resolvePreferredResumeId, type FillMode } from "../shared/panel-preferences";
 import { isSensitiveFieldLabel } from "../shared/field-matching";
@@ -21,6 +22,8 @@ import { describeAttachment, removeAttachmentAt } from "../shared/attachment-pre
 import { aiConfidenceLevel, formatAiConfidence } from "../shared/ai-display";
 import { nextResumeIndex } from "../shared/resume-menu";
 import { hasExtensionTokenChange } from "../shared/storage-change";
+import { buildAiRequestBody, sanitizePageUrl, sanitizeText } from "../shared/privacy";
+import { withRequestTimeout } from "../shared/request-timeout";
 import "./styles.css";
 
 /** 将浏览器消息异常转换为用户可以直接采取行动的中文提示。 */
@@ -38,7 +41,7 @@ function formatPageOperationError(error: unknown, operation: string) {
 /** 只展示站点和路径，避免把查询参数中的个人信息带进面板或日志。 */
 function formatPageAddress(url: string) {
   try {
-    const parsed = new URL(url);
+    const parsed = new URL(sanitizePageUrl(url));
     return `${parsed.host}${parsed.pathname === "/" ? "" : parsed.pathname}`;
   } catch {
     return "当前页面";
@@ -67,6 +70,11 @@ function App() {
   const [message, setMessage] = useState("打开申请页面后，先扫描当前页面");
   const [resumes, setResumes] = useState<ResumeSummary[]>([]);
   const [authState, setAuthState] = useState<"checking" | "signed-out" | "signed-in">("checking");
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [avatarFailed, setAvatarFailed] = useState(false);
+  const authStateRef = useRef(authState);
+  const resumeListRequestRef = useRef(0);
+  const resumeProfileRequestRef = useRef(0);
   const [loginPending, setLoginPending] = useState(false);
   const [selectedResumeId, setSelectedResumeId] = useState("");
   const [resumeMenuOpen, setResumeMenuOpen] = useState(false);
@@ -89,6 +97,8 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const resumePickerRef = useRef<HTMLDivElement | null>(null);
   const pageRevisionRef = useRef(0);
+  const messageRef = useRef(message);
+  const suppressFormNoticeUntilRef = useRef(0);
   const aiRequestRef = useRef(0);
   const [pageStale, setPageStale] = useState(false);
   const fieldOptions: Array<[FieldKey, string]> = [
@@ -103,6 +113,14 @@ function App() {
   useEffect(() => {
     photoDataRef.current = photoData;
   }, [photoData]);
+
+  useEffect(() => {
+    authStateRef.current = authState;
+  }, [authState]);
+
+  useEffect(() => {
+    messageRef.current = message;
+  }, [message]);
 
   useEffect(() => {
     if (!resumeMenuOpen) return;
@@ -140,13 +158,24 @@ function App() {
   useEffect(() => {
     void loadResumeList();
     const resetSignedOutSession = () => {
+      resumeListRequestRef.current += 1;
+      resumeProfileRequestRef.current += 1;
+      authStateRef.current = "signed-out";
       setAuthState("signed-out");
       setResumes([]);
+      setUserProfile(null);
+      setAvatarFailed(false);
       setSelectedResumeId("");
       setResume(null);
       setAiResult(null);
       setDraftOverrides({});
       setMessage("请先登录并创建简历");
+    };
+    const dismissFormNoticeAfterLogin = () => {
+      suppressFormNoticeUntilRef.current = Date.now() + LOGIN_FORM_NOTICE_SUPPRESS_MS;
+      setPageStale(false);
+      const nextMessage = formNoticeAfterLogin(messageRef.current);
+      if (nextMessage) setMessage(nextMessage);
     };
     const onStorageChanged = (changes: Record<string, { newValue?: unknown }>, areaName: string) => {
       if (!hasExtensionTokenChange(changes, areaName)) return;
@@ -156,20 +185,28 @@ function App() {
         resetSignedOutSession();
         return;
       }
+      dismissFormNoticeAfterLogin();
       void loadResumeList();
     };
     // 某些浏览器版本不会把后台页的 storage 变化转发给扩展 iframe，轮询只读取 token 是否存在，不触碰用户数据。
     const sessionCheckTimer = window.setInterval(() => {
       void browser.storage.local.get("extensionToken").then((stored) => {
-        if (!stored.extensionToken) resetSignedOutSession();
+        if (shouldResetSessionOnPoll(authStateRef.current, Boolean(stored.extensionToken))) resetSignedOutSession();
+        else if (stored.extensionToken && authStateRef.current === "signed-out") {
+          dismissFormNoticeAfterLogin();
+          void loadResumeList();
+        }
       }).catch((error) => console.warn("[Offer Star][FloatingPanel] 登录状态轮询失败", error));
     }, 1000);
-    const onPageChanged = (message: { type?: string; url?: string }) => {
+    const onPageChanged = (message: { type?: string; url?: string; tabId?: number }) => {
+      if (message.url && !shouldReportPageChange(message.url)) return;
+      if (!shouldAcceptPageChangeForPanel(fallbackTabId, message.tabId)) return;
       if (message.type === "PAGE_FORM_CHANGED") {
+        if (shouldSuppressFormNotice(suppressFormNoticeUntilRef.current, Date.now())) return;
         pageRevisionRef.current += 1;
         setPageStale(true);
-        setMessage("页面表单已更新，请重新扫描后再填写");
-        console.info("[Offer Star][FloatingPanel] 表单结构已更新", { 地址: message.url });
+        setMessage(FORM_UPDATED_NOTICE);
+        console.info("[Offer Star][FloatingPanel] 表单结构已更新", { 地址: sanitizePageUrl(message.url) });
         return;
       }
       if (message.type !== "PAGE_CONTEXT_CHANGED") return;
@@ -189,7 +226,7 @@ function App() {
       setPageStale(false);
       setPhase("ready");
       setMessage(getPageContextChangedMessage(hadPendingAttachments));
-      console.info("[Offer Star][FloatingPanel] 页面上下文已失效", { 地址: message.url });
+      console.info("[Offer Star][FloatingPanel] 页面上下文已失效", { 地址: sanitizePageUrl(message.url) });
     };
     browser.runtime.onMessage.addListener(onPageChanged);
     browser.storage.onChanged.addListener(onStorageChanged);
@@ -200,24 +237,61 @@ function App() {
     };
   }, []);
 
+  async function refreshWebsiteLogin() {
+    authStateRef.current = "checking";
+    setAuthState("checking");
+    setMessage("正在重新连接官网登录状态…");
+    try {
+      const result = await withRequestTimeout(
+        browser.runtime.sendMessage({ type: "RECONNECT_OFFER_STAR_LOGIN" }), 10000,
+        "官网登录同步超时，请刷新官网后重试"
+      );
+      if (!result?.success) throw new Error(result?.error ?? "官网登录同步失败");
+      await loadResumeList();
+    } catch (error) {
+      authStateRef.current = "signed-out";
+      setAuthState("signed-out");
+      setMessage(error instanceof Error ? error.message : "官网登录同步失败");
+    }
+  }
+
   async function loadResumeList() {
+    const requestId = ++resumeListRequestRef.current;
+    authStateRef.current = "checking";
+    setAuthState("checking");
+    setUserProfile(null);
+    setAvatarFailed(false);
     console.info("[Offer Star][FloatingPanel] 开始加载简历列表");
     let hasStoredSession = false;
     try {
-      const storedSession = await browser.storage.local.get("extensionToken");
+      const storedSession = await withRequestTimeout(browser.storage.local.get("extensionToken"), 3000, "无法读取扩展登录状态，请刷新页面后重试");
+      if (requestId !== resumeListRequestRef.current) return;
       hasStoredSession = Boolean(storedSession.extensionToken);
       if (!hasStoredSession) {
         setAuthState("signed-out");
         setResumes([]);
+        setUserProfile(null);
         setSelectedResumeId("");
         setResume(null);
+        setMessage("请先登录并创建简历");
+        return;
       }
-      const result = await browser.runtime.sendMessage({ type: "GET_RESUME_LIST" });
+      const result = await withRequestTimeout(browser.runtime.sendMessage({ type: "GET_RESUME_LIST" }), 15000, "后台登录检查超时，请刷新页面后重试");
+      if (requestId !== resumeListRequestRef.current) return;
       if (result?.error) throw new Error(result.error);
-      const list = (result ?? []) as ResumeSummary[];
+      if (!Array.isArray(result)) throw new Error("后台未返回有效简历列表，请刷新页面后重试");
+      const list = result as ResumeSummary[];
       setAuthState("signed-in");
       setResumes(list);
+      void withRequestTimeout(browser.runtime.sendMessage({ type: "GET_USER_PROFILE" }), 10000, "用户资料加载超时")
+        .then((profileResult) => {
+          if (requestId !== resumeListRequestRef.current || profileResult?.error) return;
+          setUserProfile(profileResult as UserProfile);
+          setAvatarFailed(false);
+        })
+        .catch((error) => console.warn("[Offer Star][FloatingPanel] 用户资料暂未加载", error));
       const preferences = await browser.storage.local.get(["selectedResumeId", "fillMode"]);
+      if (requestId !== resumeListRequestRef.current) return;
       setFillMode(normalizeFillMode(preferences.fillMode));
       const preferredId = resolvePreferredResumeId(list, typeof preferences.selectedResumeId === "string" ? preferences.selectedResumeId : undefined);
       if (preferredId) {
@@ -228,19 +302,22 @@ function App() {
         setMessage("还没有可用简历，请先在 Offer Star 创建一份简历");
       }
     } catch (error) {
+      if (requestId !== resumeListRequestRef.current) return;
       console.error("[Offer Star][FloatingPanel] 简历列表加载失败", error);
-      const latestSession = await browser.storage.local.get("extensionToken");
+      const latestSession = await withRequestTimeout(browser.storage.local.get("extensionToken"), 3000, "无法读取登录状态").catch(() => ({} as { extensionToken?: unknown }));
+      if (requestId !== resumeListRequestRef.current) return;
       if (hasStoredSession && latestSession.extensionToken) {
         setAuthState("signed-in");
         setMessage(error instanceof Error ? error.message : "简历加载失败，请稍后重试");
       } else {
         setAuthState("signed-out");
         setResumes([]);
+        setUserProfile(null);
         setSelectedResumeId("");
         setResume(null);
         setAiResult(null);
         setDraftOverrides({});
-        setMessage("请先登录并创建简历");
+        setMessage(error instanceof Error ? error.message : "登录检查失败，请刷新页面后重试");
       }
     }
   }
@@ -253,6 +330,8 @@ function App() {
     }
     const cleared = clearResumeSessionState();
     setResumes(cleared.resumes);
+    setUserProfile(null);
+    setAvatarFailed(false);
     setAuthState("signed-out");
     setResume(cleared.resume);
     setSelectedResumeId(cleared.selectedResumeId);
@@ -268,28 +347,28 @@ function App() {
       // Firefox 某些版本在后台页尚未完成启动时可能让消息一直等待；超时后给出可操作提示，避免按钮看起来无响应。
       const result = await Promise.race([
         browser.runtime.sendMessage({ type: "OPEN_OFFER_STAR_LOGIN" }),
-        new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error("后台打开登录页超时，请刷新当前页面后重试")), 8000))
+        new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error("后台打开登录窗口超时，请刷新当前页面后重试")), 8000))
       ]);
-      if (!result?.success) throw new Error(result?.error ?? "无法打开登录页");
-      setMessage("已打开 Offer Star 登录页，请完成登录后返回当前申请页面");
-      console.info("[Offer Star][FloatingPanel] 登录页打开成功", { 标签页: result.tabId });
+      if (!result?.success) throw new Error(result?.error ?? "无法打开登录窗口");
+      setMessage("已打开微信扫码窗口，登录成功后会自动关闭并刷新");
+      console.info("[Offer Star][FloatingPanel] 登录窗口打开成功", { 窗口: result.windowId });
     } catch (error) {
       console.error("[Offer Star][FloatingPanel] 打开官网登录失败", error);
-      setMessage(error instanceof Error ? error.message : "无法打开 Offer Star 登录页，请手动打开官网");
+      setMessage(error instanceof Error ? error.message : "无法打开微信扫码窗口，请手动打开官网");
     } finally {
       setLoginPending(false);
     }
   }
 
   async function openOfferStarResume() {
-    console.info("[Offer Star][FloatingPanel] 用户点击打开简历预览");
+    console.info("[Offer Star][FloatingPanel] 用户点击管理简历");
     try {
       const result = await browser.runtime.sendMessage({ type: "OPEN_OFFER_STAR_RESUME" });
-      if (!result?.success) throw new Error(result?.error ?? "无法打开简历预览页");
-      setMessage("已打开简历预览页，可在新标签页管理和修改简历");
+      if (!result?.success) throw new Error(result?.error ?? "无法打开简历管理页");
+      setMessage("已打开简历管理页，可在新标签页查看和修改简历");
     } catch (error) {
-      console.error("[Offer Star][FloatingPanel] 打开简历预览失败", error);
-      setMessage(error instanceof Error ? error.message : "无法打开简历预览页，请手动打开 Offer Star");
+      console.error("[Offer Star][FloatingPanel] 打开简历管理页失败", error);
+      setMessage(error instanceof Error ? error.message : "无法打开简历管理页，请手动打开高分简历");
     }
   }
 
@@ -299,17 +378,20 @@ function App() {
   }
 
   async function loadResumeProfile(resumeId: string) {
+    const requestId = ++resumeProfileRequestRef.current;
     setSelectedResumeId(resumeId);
     await browser.storage.local.set({ selectedResumeId: resumeId });
     setResume(null);
     setResumeMenuOpen(false);
     setResumeFocusIndex(0);
     try {
-      const result = await browser.runtime.sendMessage({ type: "GET_RESUME_PROFILE", resumeId });
+      const result = await withRequestTimeout(browser.runtime.sendMessage({ type: "GET_RESUME_PROFILE", resumeId }), 15000, "简历内容加载超时，请重新选择简历");
+      if (requestId !== resumeProfileRequestRef.current) return;
       if (result?.error) throw new Error(result.error);
       setResume(result as ResumeProfile);
       console.info("[Offer Star][FloatingPanel] 当前简历加载成功", { 简历编号: resumeId });
     } catch (error) {
+      if (requestId !== resumeProfileRequestRef.current) return;
       console.error("[Offer Star][FloatingPanel] 当前简历加载失败", error);
       setMessage(error instanceof Error ? error.message : "简历内容加载失败");
     }
@@ -367,7 +449,7 @@ function App() {
       const stored = await browser.storage.local.get("siteFieldOverrides");
       const next = saveFieldOverride((stored.siteFieldOverrides ?? {}) as SiteFieldOverrides, siteId, field.label, key);
       await browser.storage.local.set({ siteFieldOverrides: next });
-      console.info("[Offer Star][FloatingPanel] 已保存站点字段映射", { 站点: siteId, 字段: field.label, 类型: key ?? "已清除" });
+      console.info("[Offer Star][FloatingPanel] 已保存站点字段映射", { 站点: siteId, 字段: sanitizeText(field.label), 类型: key ?? "已清除" });
     } catch (error) {
       console.error("[Offer Star][FloatingPanel] 保存站点字段映射失败", error);
       setMessage("字段已临时确认，但映射记忆保存失败，请稍后重试");
@@ -453,7 +535,7 @@ function App() {
     setAiPending(true);
     setMessage("AI 正在分析未识别字段…");
     try {
-      const result = await browser.runtime.sendMessage({
+      const body = buildAiRequestBody({
         type: "ANALYZE_PAGE_WITH_AI",
         pageUrl: tab.url,
         siteId: getSiteAdapter(tab.url).id,
@@ -462,6 +544,7 @@ function App() {
         resume: resume ? { skills: resume.skills, selfIntroduction: resume.selfIntroduction } : undefined,
         draftInstruction
       });
+      const result = await browser.runtime.sendMessage({ type: "ANALYZE_PAGE_WITH_AI", ...body });
       if (result?.error) throw new Error(result.error);
       const currentTab = await getTargetTab();
       if (!canApplyAiResult({
@@ -556,34 +639,49 @@ function App() {
   const previewValues = resume ? filterValuesByConfidence(buildResumeFieldValues(resume, draftOverrides), fields) : {};
   const fillPreview = buildFillPreview(fields, previewValues);
   const selectedResume = resumes.find((item) => item.id === selectedResumeId);
-  const activeWorkflowStep = phase === "scanning" || phase === "ready" ? 1 : phase === "review" || phase === "confirm" ? 2 : 3;
-  const workflowSteps = ["扫描页面", "确认字段", "完成填写"];
   const pageContextState = securityBlocked ? "security" : phase === "done" ? "done" : "pending";
   const pageContextLabel = securityBlocked ? "需验证" : phase === "done" ? "已填写" : "待填写";
+  const userInitial = (userProfile?.nickname || "Offer Star").slice(0, 1).toUpperCase();
+
+  const renderFieldRow = (field: DetectedField) => <li className="field-row" key={field.id}>
+    <span className="field-row-copy">
+      <strong>{field.label || "未命名字段"}</strong>
+      <small>{field.key === "photo" ? "请选择照片" : field.key === "attachment" ? "请选择附件" : isSensitiveFieldLabel(field.label) ? "敏感问题，请手动填写" : field.confidence < 0.7 ? "需要确认对应的简历字段" : "已匹配，可自动填写"}</small>
+    </span>
+    {field.key !== "photo" && field.key !== "attachment" && !isSensitiveFieldLabel(field.label) && field.confidence < 0.7 ? <select className="field-confirm-select" aria-label={`确认${field.label || "字段"}`} value={field.key ?? ""} onChange={(event) => void confirmField(field, (event.target.value || null) as FieldKey | null)}>
+      <option value="">选择对应字段</option>
+      {fieldOptions.map(([key, label]) => <option value={key} key={key}>{label}</option>)}
+    </select> : null}
+  </li>;
 
   return <main className="offer-star-panel">
     <header className="panel-header">
-      <div className="brand-lockup"><div className="brand-mark">★</div><div><div className="eyebrow">OFFER STAR</div><h2>简历助手</h2></div></div>
-      <button className="resume-preview-button" type="button" onClick={() => void openOfferStarResume()}><PanelIcon name="document" />简历预览</button>
-      <span className={`auth-badge auth-${authState}`}>{authState === "checking" ? "检查中" : authState === "signed-in" ? "已连接" : "未登录"}</span>
-      <span className="version-badge">开发版</span>
+      <div className="brand-lockup"><div className="brand-mark">★</div><div><h2>Offer Star</h2><span>简历填写助手</span></div></div>
       {embedded ? <button className="panel-close-button" type="button" aria-label="关闭悬浮面板" onClick={() => window.parent.postMessage({ type: "OFFER_STAR_CLOSE_FLOATING_PANEL" }, "*")}>×</button> : null}
     </header>
-    <ol className="workflow-stepper" aria-label="填写流程">
-      {workflowSteps.map((step, index) => <li className={index + 1 <= activeWorkflowStep ? "workflow-step workflow-step-active" : "workflow-step"} key={step}>
-        <span className="workflow-step-number">{index + 1}</span><span>{step}</span>
-      </li>)}
-    </ol>
-    {siteName ? <div className={`site-chip${siteIsGeneric ? " site-chip-generic" : ""}`} role="status"><span className="site-chip-dot" /><span>当前页面：{siteName}</span><small>{siteIsGeneric ? "通用规则" : "专用适配"}</small></div> : null}
-    {siteName ? <section className="page-context-card" aria-label="当前页面信息"><div className="page-context-icon"><PanelIcon name="external" /></div><div className="page-context-copy"><strong>{pageTitle || "当前申请页面"}</strong><small>{pageAddress}</small></div><span className={`page-context-badge page-context-badge-${pageContextState}`}>{pageContextLabel}</span></section> : null}
-    <div className={`status-banner status-${phase}${securityBlocked ? " status-security" : ""}`} role="status" aria-live="polite" aria-atomic="true"><span className="status-dot" />{message}</div>
+
+    {authState === "signed-in" ? <section className="account-strip" aria-label="当前登录用户">
+      {userProfile?.avatar && !avatarFailed ? <img className="account-avatar" src={userProfile.avatar} alt="" onError={() => setAvatarFailed(true)} /> : <span className="account-avatar account-avatar-fallback">{userInitial}</span>}
+      <span className="account-copy"><strong>{userProfile?.nickname || "已登录 Offer Star"}</strong><small>账号已连接</small></span>
+      <button className="account-action" type="button" onClick={() => void openOfferStarResume()}>管理简历</button>
+      <button className="account-action account-logout" type="button" onClick={() => void clearExtensionToken()}>退出</button>
+    </section> : null}
+
+    <div className={`status-banner status-${phase}${securityBlocked ? " status-security" : ""}`} role="status" aria-live="polite" aria-atomic="true">{message}</div>
+
+    {siteName ? <section className="page-context-card" aria-label="当前页面信息">
+      <div className="page-context-icon"><PanelIcon name="external" /></div>
+      <div className="page-context-copy"><strong>{siteName}{siteIsGeneric ? "（通用识别）" : ""}</strong><small>{pageTitle || pageAddress || "当前申请页面"}</small></div>
+      <span className={`page-context-badge page-context-badge-${pageContextState}`}>{pageContextLabel}</span>
+    </section> : null}
+
     <section className="resume-card" aria-busy={authState === "checking"}>
-      <div className="section-heading"><span className="section-icon"><PanelIcon name="document" /></span><strong>当前简历</strong><span className="section-caption">填入来源</span></div>
-      {authState === "checking" ? <div className="resume-loading" role="status" aria-label="正在加载简历"><span className="loading-spinner" /><div className="loading-copy"><strong>正在检查登录状态</strong><span>马上准备可用简历</span></div><span className="loading-bar" /></div> : resumes.length ? <button className="logout-button" onClick={() => void clearExtensionToken()}>退出登录</button> : null}
+      <div className="section-heading"><strong>使用哪份简历</strong></div>
+      {authState === "checking" ? <div className="resume-loading" role="status" aria-label="正在加载简历"><div className="loading-copy"><strong>正在读取简历</strong><span>请稍候</span></div><span className="loading-bar" /></div> : null}
       {authState === "checking" ? null : resumes.length ? <div className="resume-picker" ref={resumePickerRef}>
         <button type="button" className="resume-picker-trigger" aria-expanded={resumeMenuOpen} aria-haspopup="listbox" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setResumeMenuOpen(false); } else if (event.key === "ArrowDown") { event.preventDefault(); setResumeMenuOpen(true); setResumeFocusIndex(0); } else if (event.key === "ArrowUp") { event.preventDefault(); setResumeMenuOpen(true); setResumeFocusIndex(Math.max(0, resumes.length - 1)); } }} onClick={() => setResumeMenuOpen((open) => !open)}>
           <span className="resume-avatar">{(selectedResume?.title || "简").slice(0, 1)}</span>
-          <span className="resume-picker-copy"><strong>{selectedResume?.title || "选择一份简历"}</strong><small>用于自动填写当前申请</small></span>
+          <span className="resume-picker-copy"><strong>{selectedResume?.title || "选择一份简历"}</strong><small>{resumes.length} 份简历可选</small></span>
           <span className="resume-chevron">{resumeMenuOpen ? "⌃" : "⌄"}</span>
         </button>
         {resumeMenuOpen ? <div className="resume-options" role="listbox" aria-label="简历列表">
@@ -592,57 +690,54 @@ function App() {
       </div> : <>
         <div className="resume-empty-state">请先登录并创建简历</div>
         <div className="login-actions">
-          <button className="button-primary" disabled={loginPending} onClick={() => void openOfferStarLogin()}>{loginPending ? "正在打开登录页…" : "打开 Offer Star 登录"}</button>
-          <button onClick={() => void loadResumeList()}>刷新登录状态</button>
+          <button className="button-primary" disabled={loginPending} onClick={() => void openOfferStarLogin()}>{loginPending ? "正在打开…" : "微信扫码登录"}</button>
+          <button onClick={() => void refreshWebsiteLogin()}>我已登录</button>
         </div>
       </>}
     </section>
-    <div className="primary-actions"><button className="button-primary" onClick={scanPage} disabled={phase === "scanning" || phase === "filling"}>
-      {phase === "scanning" ? "正在扫描…" : "扫描当前页面"}
-    </button>
-    <button className="button-secondary" onClick={() => canQuickFill(fields, pageStale) ? void fill() : setPhase("confirm")} disabled={!fields.length || pageStale || !resume || phase === "scanning" || phase === "filling" || phase === "done"}>
-      {canQuickFill(fields, pageStale) ? "一键填写" : "查看匹配结果"}
-    </button></div>
+
+    <section className={`action-card${fields.length ? " action-card-scanned" : ""}`}>
+      {fields.length ? <div className="field-summary" aria-label="字段识别统计">
+        <div><strong>{matched.length}</strong><span>项可自动填写</span></div>
+        <p>{pending.length ? `${pending.length} 项需要确认` : `共识别 ${fields.length} 项，全部已匹配`}</p>
+      </div> : <div className="action-intro"><strong>填写当前申请表</strong><span>扫描后只会填写，不会自动提交。</span></div>}
+      <div className="primary-actions">
+        <button className={fields.length ? "button-secondary" : "button-primary"} onClick={scanPage} disabled={phase === "scanning" || phase === "filling"}>
+          {phase === "scanning" ? "正在扫描…" : fields.length ? "重新扫描" : "扫描当前页面"}
+        </button>
+        {fields.length ? <button className="button-primary" onClick={() => canQuickFill(fields, pageStale) ? void fill() : setPhase("confirm")} disabled={pageStale || !resume || phase === "scanning" || phase === "filling" || phase === "done"}>
+          {canQuickFill(fields, pageStale) ? "一键填写" : "查看匹配结果"}
+        </button> : null}
+      </div>
+    </section>
+
     {siteName && !fields.length && !securityBlocked && phase !== "scanning" ? <section className="empty-scan-card" aria-live="polite">
-      <span className="empty-scan-icon"><PanelIcon name="document" /></span>
-      <div className="empty-scan-copy"><strong>暂未识别到可填写字段</strong><span>请确认申请表已展开，或刷新页面后重新扫描。</span></div>
+      <div className="empty-scan-copy"><strong>没有找到可填写字段</strong><span>请先展开申请表，再重新扫描。</span></div>
       <button type="button" onClick={() => void scanPage()}>重新扫描</button>
     </section> : null}
+
     {phase === "confirm" && <section className="review-card">
-      <strong>即将填写 {matched.length} 个字段</strong>
+      <div className="review-heading"><strong>确认填写 {matched.length} 项</strong><button className="review-back-button" onClick={() => setPhase("review")}>返回</button></div>
       <div className="fill-mode-control" role="group" aria-label="选择填写方式">
-        <span className="fill-mode-label">填写方式</span>
         <div className="segmented-control">
-          <button type="button" aria-pressed={fillMode === "incremental"} className={fillMode === "incremental" ? "segment-active" : ""} onClick={() => changeFillMode("incremental")}>仅填写新增内容</button>
-          <button type="button" aria-pressed={fillMode === "overwrite"} className={fillMode === "overwrite" ? "segment-active" : ""} onClick={() => changeFillMode("overwrite")}>全部覆盖重填</button>
+          <button type="button" aria-pressed={fillMode === "incremental"} className={fillMode === "incremental" ? "segment-active" : ""} onClick={() => changeFillMode("incremental")}>保留已有内容</button>
+          <button type="button" aria-pressed={fillMode === "overwrite"} className={fillMode === "overwrite" ? "segment-active" : ""} onClick={() => changeFillMode("overwrite")}>覆盖已有内容</button>
         </div>
       </div>
-      <p className="review-hint">照片、附件、低置信度映射、敏感问题和未识别字段需要你手动确认。</p>
       <div className="fill-preview-list">
-        {fillPreview.map((item) => <div className="fill-preview-row" key={item.fieldId}><strong>{item.label}</strong>：{item.value}</div>)}
+        {fillPreview.map((item) => <div className="fill-preview-row" key={item.fieldId}><strong>{item.label}</strong><span>{item.value}</span></div>)}
         {!fillPreview.length ? <span className="empty-copy">暂无可自动填写的内容</span> : null}
       </div>
-      <button onClick={fill}>确认填写</button>
-      <button className="review-back-button" onClick={() => setPhase("review")}>返回修改</button>
+      <button className="button-primary review-confirm-button" onClick={fill}>确认填写</button>
     </section>}
+
     {!!fields.length && <>
       {pageStale ? <p className="page-stale-banner">页面表单刚刚更新，请重新扫描后继续。</p> : null}
-      <div className="field-summary" aria-label="字段识别统计">
-        <div className="summary-tile"><span className="summary-value">{matched.length}</span><span>可直接填写</span></div>
-        <div className="summary-tile summary-pending"><span className="summary-value">{pending.length}</span><span>待确认</span></div>
-        <div className="summary-tile summary-total"><span className="summary-value">{fields.length}</span><span>已识别</span></div>
-      </div>
-      <details className="diagnostic-details"><summary>开发诊断</summary><p className="metric-note">{formatSiteMetric(siteMetric)}</p></details>
-      <label className="job-description-field">
-        职位描述（可选，供 AI 生成草稿）
-        <textarea value={jobDescription} onChange={(event) => setJobDescription(event.target.value)} rows={3} />
-      </label>
-      <div className="ai-section">
-        <div className="ai-section-heading"><div><strong>智能字段助手</strong><span>用职位描述辅助补全低置信度字段</span></div><span className="ai-sparkle"><PanelIcon name="sparkle" /></span></div>
-        <button className={`ai-button${aiPending ? " ai-button-pending" : ""}`} onClick={() => void analyzeWithAi()} disabled={phase === "filling" || aiPending}><PanelIcon name="sparkle" /> {aiPending ? "AI 分析中…" : "AI 分析未识别字段"}</button>
-        {aiResult ? <div className="ai-result-summary" role="status"><span className="ai-result-check">✓</span><div><strong>AI 已生成审核结果</strong><span>{aiResult.mappings.length} 个映射 · {aiResult.drafts.length} 个草稿，请确认后填写</span></div></div> : null}
-        {aiResult?.mappings.length ? <details className="ai-mapping-details"><summary>查看并修正字段映射</summary><div className="ai-mapping-list">{aiResult.mappings.map((mapping) => { const field = fields.find((item) => item.id === mapping.fieldId); const level = aiConfidenceLevel(mapping.confidence); return <div className={`ai-mapping-row confidence-${level}`} key={mapping.fieldId}><div className="mapping-copy"><strong>{field?.label || mapping.fieldId}</strong><span>AI 建议映射</span></div>{field ? <select className="ai-mapping-select" aria-label={`修正${field.label || "字段"}映射`} value={field.key ?? ""} onChange={(event) => void confirmField(field, (event.target.value || null) as FieldKey | null)}><option value="">未匹配</option>{fieldOptions.map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select> : <span className="mapping-unmatched">页面字段已变化</span>}<span className="confidence-badge">{formatAiConfidence(mapping.confidence)}</span></div>; })}</div></details> : null}
-      </div>
+      {pending.length ? <section className="attention-section">
+        <div className="compact-heading"><strong>需要你确认</strong><span>{pending.length} 项</span></div>
+        <ul className="field-list">{pending.map(renderFieldRow)}</ul>
+      </section> : <div className="all-matched-note">所有字段都已匹配，可以直接填写。</div>}
+
       {fields.some((field) => field.key === "photo" || field.key === "attachment") ? <section className="attachment-section">
         <div
           className={`upload-dropzone${draggingFiles ? " upload-dropzone-active" : ""}`}
@@ -668,24 +763,35 @@ function App() {
         </div> : null}
         <button className="attachment-confirm-button" onClick={confirmPhoto} disabled={!photoData.length}>确认填入附件</button>
       </section> : null}
-      <ul className="field-list">{fields.map((field) => <li className="field-row" key={field.id}>
-        {field.key === "photo" ? <><PanelIcon name="upload" />照片：需要手动选择</> : field.key === "attachment" ? <><PanelIcon name="document" />附件：需要手动选择</> : isSensitiveFieldLabel(field.label) ? `${field.label || "敏感问题"}：请手动填写` : field.confidence < 0.7 ? <>
-          <span>{field.label || "未命名字段"}：需要确认</span>
-          <select className="field-confirm-select" aria-label={`确认${field.label || "字段"}`} value={field.key ?? ""} onChange={(event) => void confirmField(field, (event.target.value || null) as FieldKey | null)}>
-            <option value="">请选择字段</option>
-            {fieldOptions.map(([key, label]) => <option value={key} key={key}>{label}</option>)}
-          </select>
-        </> : `${field.label || "未命名字段"}：${field.key ?? "待确认"}`}
-      </li>)}</ul>
-      {aiResult?.drafts.length ? <section className="draft-card">
-        <strong>AI 草稿（修改后点击“确认填写”才会写入）</strong>
-        {aiResult.drafts.map((draft) => <label className="draft-field" key={draft.fieldKey}><span>{draft.fieldKey}</span>
-          <textarea value={draftOverrides[draft.fieldKey] ?? ""} onChange={(event) => setDraftOverrides((current) => ({ ...current, [draft.fieldKey]: event.target.value }))} rows={3} />
-          <span className="draft-actions"><button onClick={() => void analyzeWithAi(`只重新生成 ${draft.fieldKey} 草稿，保留其他字段不变`, draft.fieldKey)}>重新生成</button>
-          <button onClick={() => { setAiResult((current) => current ? rejectDraft(current, draft.fieldKey) : current); setDraftOverrides((current) => { const next = { ...current }; delete next[draft.fieldKey]; return next; }); }}>拒绝</button></span>
-        </label>)}
-      </section> : null}
+
+      {matched.length ? <details className="matched-details">
+        <summary>查看已匹配的 {matched.length} 项</summary>
+        <ul className="field-list field-list-matched">{matched.map(renderFieldRow)}</ul>
+      </details> : null}
+
+      <details className="advanced-tools">
+        <summary><span><strong>智能辅助</strong><small>可选，用于难识别字段和内容草稿</small></span><span>展开</span></summary>
+        <div className="advanced-tools-body">
+          <label className="job-description-field">
+            职位描述
+            <textarea value={jobDescription} onChange={(event) => setJobDescription(event.target.value)} rows={3} placeholder="可选，粘贴后可辅助生成内容" />
+          </label>
+          <button className={`ai-button${aiPending ? " ai-button-pending" : ""}`} onClick={() => void analyzeWithAi()} disabled={phase === "filling" || aiPending}><PanelIcon name="sparkle" /> {aiPending ? "AI 分析中…" : "AI 分析未识别字段"}</button>
+          {aiResult ? <div className="ai-result-summary" role="status"><div><strong>分析完成</strong><span>{aiResult.mappings.length} 个映射，{aiResult.drafts.length} 个草稿</span></div></div> : null}
+          {aiResult?.mappings.length ? <details className="ai-mapping-details"><summary>查看并修正字段映射</summary><div className="ai-mapping-list">{aiResult.mappings.map((mapping) => { const field = fields.find((item) => item.id === mapping.fieldId); const level = aiConfidenceLevel(mapping.confidence); return <div className={`ai-mapping-row confidence-${level}`} key={mapping.fieldId}><div className="mapping-copy"><strong>{field?.label || mapping.fieldId}</strong><span>AI 建议</span></div>{field ? <select className="ai-mapping-select" aria-label={`修正${field.label || "字段"}映射`} value={field.key ?? ""} onChange={(event) => void confirmField(field, (event.target.value || null) as FieldKey | null)}><option value="">未匹配</option>{fieldOptions.map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select> : <span className="mapping-unmatched">字段已变化</span>}<span className="confidence-badge">{formatAiConfidence(mapping.confidence)}</span></div>; })}</div></details> : null}
+          {aiResult?.drafts.length ? <section className="draft-card">
+            <strong>AI 草稿</strong>
+            {aiResult.drafts.map((draft) => <label className="draft-field" key={draft.fieldKey}><span>{draft.fieldKey}</span>
+              <textarea value={draftOverrides[draft.fieldKey] ?? ""} onChange={(event) => setDraftOverrides((current) => ({ ...current, [draft.fieldKey]: event.target.value }))} rows={3} />
+              <span className="draft-actions"><button onClick={() => void analyzeWithAi(`只重新生成 ${draft.fieldKey} 草稿，保留其他字段不变`, draft.fieldKey)}>重新生成</button>
+              <button onClick={() => { setAiResult((current) => current ? rejectDraft(current, draft.fieldKey) : current); setDraftOverrides((current) => { const next = { ...current }; delete next[draft.fieldKey]; return next; }); }}>删除</button></span>
+            </label>)}
+          </section> : null}
+          <details className="diagnostic-details"><summary>开发诊断</summary><p className="metric-note">{formatSiteMetric(siteMetric)}</p></details>
+        </div>
+      </details>
     </>}
+
     {phase === "done" && <section className={failureReport ? "result-card result-warning" : "result-card result-success"}>
       <div className="result-heading"><span className="result-icon">{failureReport ? "!" : "✓"}</span><div><strong>{failureReport ? "填写部分完成" : "填写已完成"}</strong><span>{failureReport ? "请处理未填写字段后再提交" : "请检查页面内容，再手动提交"}</span></div></div>
       {failureReport ? <div className="failure-summary"><strong>{failureReport.failedFields.length} 个字段未填写</strong><span>失败原因已脱敏，可复制给开发人员排查</span><ul>{failureReport.failedFields.map((field) => <li key={field}><span>{field}</span><small>{failureReport.reasons[field] ?? "未匹配到页面控件"}</small></li>)}</ul><button className="diagnostic-button" onClick={() => void copyFailureReport()}>复制诊断报告</button></div> : null}

@@ -74,6 +74,11 @@ export type ResumeSummary = {
   updateTime?: string;
 };
 
+export type UserProfile = {
+  nickname: string;
+  avatar?: string;
+};
+
 export type AiAnalysisResult = {
   mappings: Array<{ fieldId: string; key: FieldKey | null; confidence: number; reason: string }>;
   drafts: Array<{ fieldKey: FieldKey; content: string; reason: string }>;
@@ -91,11 +96,13 @@ export type ExtensionMessage =
   | { type: "FILL_PHOTO"; dataUrl: string; fileName: string; mimeType: string }
   | { type: "FILL_FILES"; files: FilePayload[] }
   | { type: "GET_PAGE_CONTEXT" }
-  | { type: "PAGE_CONTEXT_CHANGED"; url: string; reason: string }
-  | { type: "PAGE_FORM_CHANGED"; url: string }
-  | { type: "SYNC_OFFER_STAR_TOKEN"; token: string | null }
+  | { type: "PAGE_CONTEXT_CHANGED"; url: string; reason: string; tabId?: number }
+  | { type: "PAGE_FORM_CHANGED"; url: string; tabId?: number }
+  | { type: "SYNC_OFFER_STAR_TOKEN"; token: string | null; closeLoginWindow?: boolean }
+  | { type: "RECONNECT_OFFER_STAR_LOGIN" }
   | { type: "CLEAR_EXTENSION_TOKEN" }
   | { type: "PAGE_FIELDS_DETECTED"; fields: DetectedField[] }
   | { type: "GET_RESUME_LIST" }
   | { type: "GET_RESUME_PROFILE"; resumeId: string }
+  | { type: "GET_USER_PROFILE" }
   | { type: "ANALYZE_PAGE_WITH_AI"; pageUrl: string; siteId: string; jobDescription: string; fields: DetectedField[]; resume?: Pick<ResumeProfile, "skills" | "selfIntroduction">; draftInstruction?: string };

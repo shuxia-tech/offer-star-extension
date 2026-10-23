@@ -16,3 +16,8 @@ export const RESUME_SESSION_STORAGE_KEYS = ["extensionToken", "selectedResumeId"
 export function shouldClearExtensionToken(status: number) {
   return status === 401;
 }
+
+/** 未登录状态不重复重置提示，只在已登录授权消失时执行轮询兜底清理。 */
+export function shouldResetSessionOnPoll(authState: "checking" | "signed-out" | "signed-in", hasToken: boolean) {
+  return authState === "signed-in" && !hasToken;
+}

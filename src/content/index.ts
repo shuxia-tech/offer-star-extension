@@ -4,9 +4,13 @@ import { createDomEngine } from "./dom-engine";
 import { extractPageContext } from "../shared/page-context";
 import { installNavigationObserver } from "../shared/navigation-observer";
 import { installFormMutationObserver } from "../shared/form-mutation-observer";
+import { shouldReportPageChange } from "../shared/page-change-routing";
 import { mountFloatingLauncher, mountFloatingPanel, setFloatingLauncherVisible, unmountFloatingPanel } from "./floating-launcher";
-import { readOfferStarToken, tokenFromStorageEvent } from "../shared/token-sync";
+import { shouldRequestLoginWindowClose, shouldSyncOfferStarLogin } from "../shared/login-window";
+import { isOfferStarAuthStorageKey, readOfferStarPageToken, tokenFromLoginCallback } from "../shared/token-sync";
 import { detectSecurityChallenge } from "../shared/security-page";
+import { sanitizePageUrl } from "../shared/privacy";
+import { withRequestTimeout } from "../shared/request-timeout";
 
 let engine = createDomEngine(document, location.href);
 let hasScanned = false;
@@ -17,13 +21,14 @@ installNavigationObserver(window, ({ url, reason }) => {
   hasScanned = false;
   unmountFloatingPanel(document);
   setFloatingLauncherVisible(document, true);
-  console.info("[Offer Star][Content] 检测到页面导航，已使旧字段映射失效", { 地址: url, 原因: reason });
+  if (!shouldReportPageChange(url)) return;
+  console.info("[Offer Star][Content] 检测到页面导航，已使旧字段映射失效", { 地址: sanitizePageUrl(url), 原因: reason });
   void browser.runtime.sendMessage({ type: "PAGE_CONTEXT_CHANGED", url, reason });
 });
 
 installFormMutationObserver(document, () => {
-  if (!hasScanned) return;
-  console.info("[Offer Star][Content] 检测到表单结构异步更新，提示重新扫描", { 地址: location.href });
+  if (!hasScanned || !shouldReportPageChange(location.href)) return;
+  console.info("[Offer Star][Content] 检测到表单结构异步更新，提示重新扫描", { 地址: sanitizePageUrl(location.href) });
   void browser.runtime.sendMessage({ type: "PAGE_FORM_CHANGED", url: location.href });
 }, () => suppressFormMutationNotice);
 
@@ -41,7 +46,9 @@ const openFloatingPanel = () => {
   });
 };
 
-mountFloatingLauncher(document, openFloatingPanel);
+if (location.hostname !== "offer.gfjianli.com" || location.pathname !== "/extension-login") {
+  mountFloatingLauncher(document, openFloatingPanel);
+}
 
 window.addEventListener("message", (event) => {
   const frame = document.getElementById("offer-star-floating-panel-frame") as HTMLIFrameElement | null;
@@ -101,17 +108,32 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendR
 // 只在 Offer Star 官网同步当前登录状态，不读取其他网站的 localStorage。
 if (location.hostname === "offer.gfjianli.com") {
   let lastOfferStarToken: string | null | undefined;
-  const syncOfferStarToken = (token: string | null, source: string) => {
-    if (token === lastOfferStarToken) return;
-    lastOfferStarToken = token;
-    console.info("[Offer Star][Content] 官网登录状态发生变化，申请同步扩展授权", { 来源: source, 已登录: Boolean(token) });
-    void browser.runtime.sendMessage({ type: "SYNC_OFFER_STAR_TOKEN", token });
+  let lastCloseRequested = false;
+  let tokenSyncPending = false;
+  const syncOfferStarToken = (source: string) => {
+    const token = readOfferStarPageToken(location.search);
+    const loginReady = document.documentElement.dataset.offerStarLogin === "ready";
+    if (token !== lastOfferStarToken) lastCloseRequested = false;
+    if (!shouldSyncOfferStarLogin(location.pathname, token, loginReady)) return;
+    const closeLoginWindow = shouldRequestLoginWindowClose(location.pathname, Boolean(tokenFromLoginCallback(location.search)), loginReady);
+    if (tokenSyncPending || (token === lastOfferStarToken && !(closeLoginWindow && !lastCloseRequested))) return;
+    tokenSyncPending = true;
+    console.info("[Offer Star][Content] 官网登录状态发生变化，申请同步扩展授权", { 来源: source, 已登录: Boolean(token), 关闭登录窗口: closeLoginWindow });
+    void withRequestTimeout(browser.runtime.sendMessage({ type: "SYNC_OFFER_STAR_TOKEN", token, closeLoginWindow }), 8000, "登录同步超时")
+      .then((result) => {
+        if (!result?.success) return;
+        lastOfferStarToken = token;
+        if (closeLoginWindow) lastCloseRequested = true;
+      }).catch(() => {
+        console.warn("[Offer Star][Content] 登录同步暂未完成，将重试；更新扩展后请刷新官网");
+      }).finally(() => { tokenSyncPending = false; });
   };
-  syncOfferStarToken(readOfferStarToken(), "页面初始化");
+  syncOfferStarToken("页面初始化");
   window.addEventListener("storage", (event) => {
-    if (event.key !== "SECRET_TOKEN") return;
-    syncOfferStarToken(tokenFromStorageEvent(event), "storage 事件");
+    if (!isOfferStarAuthStorageKey(event.key)) return;
+    syncOfferStarToken("storage 事件");
   });
-  // 登录弹窗与当前页面属于同一文档时，storage 事件不会在当前文档触发；短轮询确保登录后无需刷新页面。
-  window.setInterval(() => syncOfferStarToken(readOfferStarToken(), "登录状态轮询"), 1000);
+  // 登录回调与当前页面属于同一文档时，storage 事件不会在当前文档触发；短轮询确保登录后无需刷新页面。
+  window.setInterval(() => syncOfferStarToken("登录状态轮询"), 1000);
+  new MutationObserver(() => syncOfferStarToken("登录页确认")).observe(document.documentElement, { attributes: true, attributeFilter: ["data-offer-star-login"] });
 }

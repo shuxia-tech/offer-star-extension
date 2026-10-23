@@ -1,12 +1,22 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
 const sources = {
   extension: resolve(root, "src/shared/messages.ts"),
-  web: resolve(root, "../offer-star-web/lib/extension-ai.ts"),
-  node: resolve(root, "../resume-node/src/modules/extension/extension-ai-routes.ts")
+  web: resolve(process.env.OFFER_STAR_WEB_CONTRACT_PATH || resolve(root, "../offer-star-web/lib/extension-ai.ts")),
+  node: resolve(process.env.OFFER_STAR_NODE_CONTRACT_PATH || [
+    resolve(root, "../resume-node/src/modules/extension/extension-ai-routes.ts"),
+    resolve(root, "../ai-resume-node/src/modules/extension/extension-ai-routes.ts")
+  ].find((path) => existsSync(path)) || resolve(root, "../resume-node/src/modules/extension/extension-ai-routes.ts"))
 };
+
+const missing = Object.entries(sources).filter(([, path]) => !existsSync(path));
+if (missing.length) {
+  console.error("[Offer Star][Contract] 字段契约检查未通过，缺少关联项目文件：", Object.fromEntries(missing));
+  console.error("请恢复包含扩展 AI 接口的关联仓库版本，或通过 OFFER_STAR_WEB_CONTRACT_PATH、OFFER_STAR_NODE_CONTRACT_PATH 指定真实契约文件；不能用插件字段副本代替服务端契约。");
+  process.exit(1);
+}
 
 function extract(sourceName, pattern) {
   const source = readFileSync(sources[sourceName], "utf8");

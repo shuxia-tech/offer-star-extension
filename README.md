@@ -6,6 +6,8 @@
 
 完整的阶段计划、当前未完成事项、电脑维修后的恢复步骤、需要用户配合的登录与真实站点验收，以及每项功能的完成标准，统一见 [后续工作与交接清单](docs/后续工作与交接清单.md)。后续开发应先按该文档的 P0 顺序开始，再推进 P1/P2 工作。
 
+Mac 上的自动验收、Chrome / Firefox 手工安装、测试页及当前阻断见 [Mac 测试指南](docs/Mac测试指南.md)。插件独立门禁使用 `npm run verify:local`；它不代替包含跨项目契约的 `verify` 和最终发布门禁。
+
 Offer Star 简历助手使用 WXT、React 和 TypeScript 构建，面向 Chrome、Edge 和 Firefox。插件的目标是扫描招聘网站申请表单，优先使用通用 HTML 规则识别字段，只有遇到异步下拉、动态经历、附件路由或分步骤页面时才使用站点专用策略。
 
 ## 开发环境
@@ -52,7 +54,7 @@ npm run verify
 npm run verify:full
 ```
 
-`verify:full` 会在 `verify` 的基础上继续执行 Chromium 扩展 E2E 和 Firefox runtime smoke；它要求本机可以启动 Edge/Chrome 与 Firefox。
+`verify:full` 会在 `verify` 的基础上继续执行 Chromium 扩展 E2E、AI E2E、Firefox runtime 和 fixture；它要求本机可以启动相应测试浏览器。
 
 AI 扩展成功路径可以单独执行：
 
@@ -87,7 +89,7 @@ $env:FIREFOX_SMOKE_SELECTORS='input[name="name"],input[name="phone"],input[name=
 npm run test:firefox:page
 ```
 
-它只验证 Firefox 能启动并接受临时扩展，不代替表单交互 E2E；默认读取 `C:\Program Files\Mozilla Firefox\firefox.exe`，其他安装路径通过 `FIREFOX_EXECUTABLE_PATH` 指定。
+runtime 只验证 Firefox 能启动并接受临时扩展，不代替表单交互 E2E。脚本自动识别 macOS、Windows、Linux 的 Firefox 安装路径，找不到时使用 Playwright 测试版；其他安装路径通过 `FIREFOX_EXECUTABLE_PATH` 指定。
 
 当前测试包含通用表单、站点夹具、异步下拉、动态区块、附件、AI 映射、值格式校验、页面过期保护和一键填写安全门槛。测试日志使用中文，允许在开发阶段保留 `console.info`、`console.warn` 和 `console.error`，但不得打印 token、API Key、手机号、邮箱、身份证号或完整简历内容。
 
@@ -148,5 +150,4 @@ Firefox 如果由于临时扩展或自动化驱动限制无法完成自动化测
 - `[扩展AI]`：Web 服务端 AI 网关。
 
 遇到问题时先记录浏览器、目标站点、页面 URL（去除查询参数）、扫描字段数量、失败字段和失败原因，不要提交用户简历原文或任何密钥。
-
 

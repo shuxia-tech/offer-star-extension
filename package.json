@@ -8,6 +8,7 @@
     "dev:chrome": "wxt -b chrome",
     "dev:edge": "wxt -b edge",
     "dev:firefox": "wxt -b firefox",
+    "dev:fixtures": "vite --host 127.0.0.1 --port 4173 --strictPort --config vite.test.config.ts",
     "build": "wxt build",
     "build:chrome": "wxt build -b chrome",
     "build:edge": "wxt build -b edge",
@@ -23,13 +24,14 @@
     "build:prototype": "tsc --noEmit && vite build",
     "typecheck": "wxt prepare && tsc --noEmit",
     "test": "vitest run",
-    "verify": "npm run typecheck && npm test -- --run && npm run build:all && node scripts/verify-production-build.mjs && npm run test:manifests && npm run test:contracts && npm run test:firefox && node scripts/verify-no-secrets.mjs",
+    "verify:local": "npm run typecheck && npm test -- --run && npm run build:all && node scripts/verify-production-build.mjs && npm run test:manifests && npm run test:firefox && node scripts/verify-no-secrets.mjs",
+    "verify": "npm run verify:local && npm run test:contracts",
     "test:security": "node scripts/verify-no-secrets.mjs",
     "test:e2e": "playwright test",
-    "test:e2e:headed": "set EXTENSION_E2E_HEADED=1&& playwright test tests/e2e/extension.spec.ts",
-    "test:e2e:extension": "set EXTENSION_E2E_HEADED=1&& set EXTENSION_E2E_ASSERT_EXTENSION=1&& playwright test tests/e2e/extension.spec.ts",
+    "test:e2e:headed": "node scripts/test-e2e-extension.mjs",
+    "test:e2e:extension": "node scripts/test-e2e-extension.mjs",
     "test:e2e:ai": "node scripts/test-e2e-ai.mjs",
-    "verify:full": "npm run verify && npm run test:e2e:extension && npm run test:e2e:ai && npm run test:firefox:runtime"
+    "verify:full": "npm run verify && npm run test:e2e:extension && npm run test:e2e:ai && npm run test:firefox:runtime && npm run test:firefox:fixture"
   },
   "devDependencies": {
     "@playwright/test": "^1.51.1",

@@ -2,12 +2,25 @@ import type { ExtensionMessage, ResumeProfile, ResumeSummary } from "../shared/m
 import { browser } from "wxt/browser";
 import { normalizeResumeList, normalizeResumeProfile } from "../shared/resume-profile";
 import { requestAiGateway } from "../shared/ai-request";
-import { RESUME_SESSION_STORAGE_KEYS, shouldClearExtensionToken } from "../shared/auth-session";
+import { RESUME_SESSION_STORAGE_KEYS } from "../shared/auth-session";
+import { requestResumeApi, ResumeSessionExpiredError } from "../shared/resume-request";
 import { clearResumeCacheKeys, isResumeCacheFresh, profileCacheKey, RESUME_LIST_CACHE_KEY, type CachedResumeList, type CachedResumeProfile } from "../shared/resume-cache";
 import { shouldForwardPageChange } from "../shared/page-change-routing";
+import { buildResumeManageUrl } from "../shared/resume-manage-url";
+import { buildAiRequestBody, sanitizePageUrl } from "../shared/privacy";
+import { isOfferStarPage, reconnectOfferStarLogin } from "../shared/login-reconnect";
+import { OFFER_STAR_EXTENSION_LOGIN_URL, shouldCloseLoginWindow } from "../shared/login-window";
+import { withRequestTimeout } from "../shared/request-timeout";
+import { readOfferStarTokenInPage } from "../shared/token-sync";
+import { normalizeUserProfile } from "../shared/user-profile";
 
 const API_BASE = "https://api.gfjianli.com/api";
 const EXTENSION_AI_URL = import.meta.env.VITE_OFFER_STAR_AI_URL || "https://offer.gfjianli.com/api/extension/ai/analyze";
+let loginWindowId: number | undefined;
+
+browser.windows.onRemoved.addListener((windowId) => {
+  if (windowId === loginWindowId) loginWindowId = undefined;
+});
 
 browser.runtime.onInstalled.addListener(() => {
   console.info("[Offer Star][Background] 扩展安装或更新完成");
@@ -41,40 +54,83 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRe
     sendResponse({ tabId: sender.tab?.id ?? null });
     return false;
   }
+  if (message.type === "GET_USER_PROFILE") {
+    void getUserProfile().then(sendResponse).catch((error) => {
+      console.error("[Offer Star][Background] 获取用户资料失败", error);
+      sendResponse({ error: error instanceof Error ? error.message : "用户资料加载失败" });
+    });
+    return true;
+  }
   if (message.type === "OPEN_OFFER_STAR_LOGIN") {
-    // 由后台页创建标签页，避免网页内 iframe 在 Firefox/Chromium 中直接调用 tabs.create 时静默失败。
-    void browser.tabs.create({ url: "https://offer.gfjianli.com/?openLogin=1" }).then((tab) => {
-      console.info("[Offer Star][Background] 已打开 Offer Star 登录页", { 标签页: tab.id });
-      sendResponse({ success: true, tabId: tab.id });
+    // 由后台页创建扫码窗口，避免网页内 iframe 直接开窗时被浏览器拦截。
+    void openOfferStarLoginWindow().then((result) => {
+      console.info("[Offer Star][Background] 已打开微信扫码窗口", { 窗口: result.windowId, 复用: result.reused });
+      sendResponse({ success: true, windowId: result.windowId });
     }).catch((error) => {
-      console.error("[Offer Star][Background] 打开 Offer Star 登录页失败", error);
-      sendResponse({ success: false, error: "无法打开 Offer Star 登录页，请检查浏览器权限或手动打开官网" });
+      console.error("[Offer Star][Background] 打开微信扫码窗口失败", error);
+      sendResponse({ success: false, error: "无法打开微信扫码窗口，请检查浏览器权限或手动打开官网" });
     });
     return true;
   }
   if (message.type === "OPEN_OFFER_STAR_RESUME") {
-    // 简历预览仍由后台页创建标签页，避免网页 iframe 受浏览器弹窗策略影响。
-    void browser.tabs.create({ url: "https://offer.gfjianli.com/resume.html?target=resume_assistant" }).then((tab) => {
-      console.info("[Offer Star][Background] 已打开简历预览页", { 标签页: tab.id });
+    // 简历管理页由后台页创建标签页，避免网页 iframe 受浏览器弹窗策略影响。
+    void openResumeManagePage().then((tab) => {
+      console.info("[Offer Star][Background] 已打开简历管理页", { 标签页: tab.id });
       sendResponse({ success: true, tabId: tab.id });
     }).catch((error) => {
-      console.error("[Offer Star][Background] 打开简历预览页失败", error);
-      sendResponse({ success: false, error: "无法打开简历预览页，请手动打开 Offer Star" });
+      console.error("[Offer Star][Background] 打开简历管理页失败", error);
+      sendResponse({ success: false, error: "无法打开简历管理页，请手动打开高分简历" });
     });
     return true;
   }
   if (message.type === "SYNC_OFFER_STAR_TOKEN") {
-    if (sender.url?.startsWith("https://offer.gfjianli.com/")) {
-      void (message.token
-        ? browser.storage.local.set({ extensionToken: message.token })
-        : browser.storage.local.remove("extensionToken"));
-      console.info("[Offer Star][Background] 已同步网站登录状态到扩展", { 已登录: Boolean(message.token) });
-      sendResponse({ success: true });
+    if (isOfferStarPage(sender.url)) {
+      const token = message.token?.trim() || null;
+      const closeWindow = Boolean(message.closeLoginWindow) && shouldCloseLoginWindow(loginWindowId, sender.tab?.windowId, token);
+      void (token
+        ? browser.storage.local.set({ extensionToken: token })
+        : clearResumeSessionStorage()).then(() => {
+          console.info("[Offer Star][Background] 已同步网站登录状态到扩展", { 已登录: Boolean(token) });
+          sendResponse({ success: true });
+          if (!closeWindow || typeof loginWindowId !== "number") return;
+          const windowId = loginWindowId;
+          loginWindowId = undefined;
+          void browser.windows.remove(windowId).catch((error) => {
+            console.warn("[Offer Star][Background] 登录窗口关闭失败", error);
+          });
+        }).catch(() => {
+          console.warn("[Offer Star][Background] 登录状态同步失败，请刷新官网重试");
+          sendResponse({ success: false });
+        });
+      return true;
     } else {
       console.warn("[Offer Star][Background] 拒绝非 Offer Star 页面同步登录状态");
       sendResponse({ success: false });
     }
     return false;
+  }
+  if (message.type === "RECONNECT_OFFER_STAR_LOGIN") {
+    // 只允许扩展面板发起，普通网页内容脚本不能请求读取官网授权。
+    const runtimeWithUrl = browser.runtime as typeof browser.runtime & { getURL: (path: string) => string };
+    if (!sender.url?.startsWith(runtimeWithUrl.getURL(""))) {
+      sendResponse({ success: false, error: "请从扩展面板刷新登录状态" });
+      return false;
+    }
+    void withRequestTimeout((async () => reconnectOfferStarLogin({
+      tabs: await browser.tabs.query({ url: "https://offer.gfjianli.com/*" }),
+      readToken: async (tabId) => {
+        const results = await browser.scripting.executeScript({
+          target: { tabId },
+          func: readOfferStarTokenInPage
+        });
+        const token = results[0]?.result;
+        return typeof token === "string" ? token : null;
+      },
+      saveToken: async (token) => { await browser.storage.local.set({ extensionToken: token }); }
+    }))(), 8000, "官网登录同步超时，请刷新官网后重试").then(sendResponse).catch((error) => {
+      sendResponse({ success: false, error: error instanceof Error ? error.message : "官网登录同步失败" });
+    });
+    return true;
   }
   if (message.type === "CLEAR_EXTENSION_TOKEN") {
     void clearResumeSessionStorage().then(() => {
@@ -101,9 +157,9 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRe
     return true;
   }
   // 只有内容脚本带有 tab 身份时才允许转发，避免后台 runtime.sendMessage 的回传再次进入本分支。
-  if ((message.type === "PAGE_CONTEXT_CHANGED" || message.type === "PAGE_FORM_CHANGED") && shouldForwardPageChange(sender.tab?.id)) {
-    console.info("[Offer Star][Background] 转发表单页面状态变化", { 类型: message.type, 地址: message.url });
-    void browser.runtime.sendMessage(message).catch((error) => {
+  if ((message.type === "PAGE_CONTEXT_CHANGED" || message.type === "PAGE_FORM_CHANGED") && shouldForwardPageChange(sender.tab?.id, message.url)) {
+    console.info("[Offer Star][Background] 转发表单页面状态变化", { 类型: message.type, 地址: sanitizePageUrl(message.url) });
+    void browser.runtime.sendMessage({ ...message, tabId: sender.tab?.id }).catch((error) => {
       console.warn("[Offer Star][Background] 悬浮面板尚未打开，页面状态消息未送达", error);
     });
     return false;
@@ -119,6 +175,34 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRe
   return false;
 });
 
+async function openOfferStarLoginWindow() {
+  if (typeof loginWindowId === "number") {
+    try {
+      await browser.windows.update(loginWindowId, { focused: true });
+      return { windowId: loginWindowId, reused: true };
+    } catch (error) {
+      console.warn("[Offer Star][Background] 原登录窗口已不存在，重新打开", error);
+      loginWindowId = undefined;
+    }
+  }
+  const created = await browser.windows.create({
+    url: OFFER_STAR_EXTENSION_LOGIN_URL,
+    type: "popup",
+    width: 680,
+    height: 760,
+    focused: true
+  });
+  if (typeof created?.id !== "number") throw new Error("浏览器没有返回登录窗口");
+  loginWindowId = created.id;
+  return { windowId: created.id, reused: false };
+}
+
+async function openResumeManagePage() {
+  const { extensionToken } = await browser.storage.local.get("extensionToken") as { extensionToken?: string };
+  const token = typeof extensionToken === "string" ? extensionToken : null;
+  return browser.tabs.create({ url: buildResumeManageUrl(token) });
+}
+
 async function getResumeProfile(resumeId: string): Promise<ResumeProfile> {
   console.info("[Offer Star][Background] 开始获取简历", { 简历编号: resumeId });
   const { extensionToken } = await browser.storage.local.get("extensionToken") as { extensionToken?: string };
@@ -131,6 +215,7 @@ async function getResumeProfile(resumeId: string): Promise<ResumeProfile> {
     console.info("[Offer Star][Background] 简历获取成功", { 简历编号: resumeId });
     return profile;
   } catch (error) {
+    if (error instanceof ResumeSessionExpiredError) throw error;
     const stored = await browser.storage.local.get(cacheKey) as Record<string, CachedResumeProfile | undefined>;
     if (isResumeCacheFresh(stored[cacheKey])) {
       console.warn("[Offer Star][Background] 简历接口暂时不可用，使用短时缓存", { 简历编号: resumeId });
@@ -138,6 +223,13 @@ async function getResumeProfile(resumeId: string): Promise<ResumeProfile> {
     }
     throw error;
   }
+}
+
+async function getUserProfile() {
+  const { extensionToken } = await browser.storage.local.get("extensionToken") as { extensionToken?: string };
+  if (!extensionToken) throw new Error("请先登录 Offer Star");
+  const response = await requestOfferStar("/auth/c/getLoginUser/offer", extensionToken);
+  return normalizeUserProfile(response);
 }
 
 async function getResumeList(): Promise<ResumeSummary[]> {
@@ -150,6 +242,7 @@ async function getResumeList(): Promise<ResumeSummary[]> {
     console.info("[Offer Star][Background] 简历列表获取成功", { 数量: list.length });
     return list;
   } catch (error) {
+    if (error instanceof ResumeSessionExpiredError) throw error;
     const stored = await browser.storage.local.get(RESUME_LIST_CACHE_KEY) as Record<string, CachedResumeList | undefined>;
     if (isResumeCacheFresh(stored[RESUME_LIST_CACHE_KEY])) {
       console.warn("[Offer Star][Background] 简历列表接口暂时不可用，使用短时缓存");
@@ -166,32 +259,26 @@ async function clearResumeSessionStorage() {
 }
 
 async function requestOfferStar(path: string, token: string): Promise<unknown> {
-  const response = await fetch(`${API_BASE}${path}`, { headers: { token } });
-  if (!response.ok) {
-    console.error("[Offer Star][Background] 简历接口返回异常", { 状态码: response.status, 路径: path });
-    if (shouldClearExtensionToken(response.status)) {
-      await clearResumeSessionStorage();
-      console.warn("[Offer Star][Background] 登录状态已失效，已清除本地扩展授权");
+  try {
+    return await requestResumeApi(`${API_BASE}${path}`, token);
+  } catch (error) {
+    if (error instanceof ResumeSessionExpiredError) {
+      const current = await browser.storage.local.get("extensionToken");
+      // 旧请求的未授权响应不能清掉用户刚完成的新登录。
+      if (current.extensionToken === token) {
+        await clearResumeSessionStorage();
+        console.warn("[Offer Star][Background] 登录状态已失效，已清除本地扩展授权");
+      }
     }
-    throw new Error(`简历请求失败：${response.status}`);
+    throw error;
   }
-  const body = await response.json() as { data?: unknown; code?: number; message?: string };
-  if (body.code && body.code !== 200) throw new Error(body.message || `接口返回错误：${body.code}`);
-  return body.data ?? body;
 }
 
 async function analyzePageWithAi(message: Extract<ExtensionMessage, { type: "ANALYZE_PAGE_WITH_AI" }>) {
   const { extensionToken } = await browser.storage.local.get("extensionToken") as { extensionToken?: string };
   if (!extensionToken) throw new Error("请先登录 Offer Star");
   try {
-    return await requestAiGateway(EXTENSION_AI_URL, extensionToken, {
-      pageUrl: message.pageUrl,
-      siteId: message.siteId,
-      jobDescription: message.jobDescription,
-      fields: message.fields,
-      resume: message.resume,
-      draftInstruction: message.draftInstruction
-    }, {
+    return await requestAiGateway(EXTENSION_AI_URL, extensionToken, buildAiRequestBody(message), {
       timeoutMs: 15_000,
       retries: 1,
       retryDelayMs: 500

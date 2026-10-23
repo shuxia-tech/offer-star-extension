@@ -1,4 +1,5 @@
 import { getSiteAdapter } from "./site-adapters";
+import { sanitizePageUrl, sanitizeText } from "./privacy";
 
 export type PageContext = {
   siteId: string;
@@ -23,28 +24,8 @@ export function extractPageContext(document: Document, pageUrl: string): PageCon
   return {
     siteId: adapter.id,
     siteName: adapter.name,
-    pageUrl: stripQueryAndHash(pageUrl),
+    pageUrl: sanitizePageUrl(pageUrl),
     pageTitle: sanitizeText(title).slice(0, 300),
     jobDescription: sanitizeText(text).slice(0, 8000)
   };
-}
-
-function stripQueryAndHash(pageUrl: string): string {
-  try {
-    const parsed = new URL(pageUrl);
-    parsed.search = "";
-    parsed.hash = "";
-    return parsed.toString();
-  } catch {
-    return pageUrl;
-  }
-}
-
-function sanitizeText(value: string | null | undefined): string {
-  return (value ?? "")
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, " ")
-    .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "[邮箱已脱敏]")
-    .replace(/(?:\+?86[-\s]?)?1[3-9]\d{9}/g, "[手机号已脱敏]")
-    .replace(/\s+/g, " ")
-    .trim();
 }

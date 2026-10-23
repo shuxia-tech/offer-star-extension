@@ -1,11 +1,19 @@
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { resolveBrowserExecutable } from "./browser-executable.mjs";
 
-const command = process.platform === "win32" ? "npx.cmd" : "npx";
-const firefoxBinary = process.env.FIREFOX_EXECUTABLE_PATH || "C:\\Program Files\\Mozilla Firefox\\firefox.exe";
-const binaryArgument = process.platform === "win32" ? `"${firefoxBinary}"` : firefoxBinary;
+let firefoxBinary;
+try {
+  firefoxBinary = resolveBrowserExecutable("firefox");
+} catch (error) {
+  console.error("Firefox 运行时验收失败：", error.message);
+  process.exit(1);
+}
+const webExtEntrypoint = fileURLToPath(new URL("../node_modules/web-ext/bin/web-ext.js", import.meta.url));
 // 使用 web-ext 自己创建临时 profile，并关闭标准输入交互，避免复用用户已有 Firefox 进程导致 smoke 卡住。
-const child = spawn(command, ["web-ext", "run", "--source-dir", ".output/firefox-mv2", "--firefox-binary", binaryArgument, "--no-reload", "--no-input"], {
-  shell: process.platform === "win32",
+const child = spawn(process.execPath, [webExtEntrypoint, "run", "--source-dir", ".output/firefox-mv2", "--firefox-binary", firefoxBinary, "--no-reload", "--no-input", "--verbose"], {
+  shell: false,
+  detached: process.platform !== "win32",
   stdio: ["ignore", "pipe", "pipe"]
 });
 
@@ -26,7 +34,7 @@ function stopProcessTree() {
   if (process.platform === "win32") {
     spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
   } else {
-    child.kill("SIGINT");
+    try { process.kill(-child.pid, "SIGTERM"); } catch { child.kill("SIGTERM"); }
   }
 }
 
