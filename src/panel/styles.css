@@ -79,6 +79,43 @@ button, input, select, textarea { font: inherit; }
 .account-action { min-height: 28px !important; padding: 0 7px !important; font-size: 10px !important; border: 0 !important; background: transparent !important; }
 .account-logout { color: #8a5965 !important; }
 
+.panel-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 14px; padding: 4px; border-radius: 12px; background: #eef1f5; }
+.panel-tabs button { min-height: 34px; color: #6b7789 !important; font-size: 13px; border: 0 !important; border-radius: 9px; background: transparent !important; box-shadow: none; }
+.panel-tabs button.tab-active { color: #1f2a3a !important; background: #fff !important; box-shadow: 0 1px 3px #1d2b4414; }
+.smart-fill h3 { margin: 0 0 4px; font-size: 16px; font-weight: 700; }
+.smart-fill > p { margin: 0 0 12px; color: #8b95a5; font-size: 13px; }
+.fill-hero { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 22px 16px 16px; text-align: center; border: 1px solid #d6ebff; border-radius: 14px; background: #e8f4ff; }
+.fill-hero-icon { display: grid; place-items: center; width: 46px; height: 46px; color: #fff; border-radius: 50%; background: #1677ff; }
+.fill-hero-icon svg, .fill-submit svg { width: 18px; height: 18px; fill: currentColor; }
+.fill-hero strong { color: #1f2a3a; font-size: 16px; }
+.fill-hero > span { color: #8b95a5; font-size: 12px; line-height: 1.5; }
+.fill-submit { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; min-height: 40px; margin-top: 6px; color: #fff !important; font-size: 14px; border: 0 !important; border-radius: 8px; background: #1677ff !important; }
+.fill-submit:hover:not(:disabled) { color: #fff !important; background: #0958d9 !important; }
+.fill-refresh { min-height: 28px !important; color: #5c6b80 !important; font-size: 12px; border: 0 !important; background: transparent !important; }
+.resume-preview-body { display: flex; flex-direction: column; gap: 12px; margin-top: 12px; color: #314158; font-size: 12px; line-height: 1.5; }
+.resume-preview-skeleton { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.preview-skeleton-card { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 10px; background: #f7f9fc; }
+.preview-skeleton-line, .preview-skeleton-title { display: block; height: 10px; border-radius: 99px; background: linear-gradient(90deg, #e4ebf4 18%, #f7f9fc 42%, #e4ebf4 68%); background-size: 220% 100%; animation: offer-star-loading 1.3s ease-in-out infinite; }
+.preview-skeleton-title { width: 28%; height: 12px; }
+.preview-skeleton-short { width: 46%; }
+.preview-skeleton-mid { width: 72%; }
+.preview-section h4 { margin: 0 0 6px; color: #1f2a3a; font-size: 13px; }
+.preview-facts { display: grid; gap: 6px; margin: 0; }
+.preview-facts div { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; align-items: start; }
+.preview-facts dt { color: #7d8b9e; }
+.preview-facts dd { margin: 0; overflow-wrap: anywhere; }
+.preview-entries { display: flex; flex-direction: column; gap: 8px; }
+.preview-entries article, .preview-section p { margin: 0; }
+.preview-entries article { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 10px; background: #f7f9fc; }
+.preview-entries strong { color: #1f2a3a; font-size: 13px; }
+.preview-entries small, .preview-section li { color: #5c6b80; }
+.preview-entries p, .preview-section > p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.preview-clamp { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 4; }
+.preview-toggle { align-self: flex-start; min-height: 0 !important; margin-top: 2px; padding: 0 !important; color: #1677ff !important; font-size: 12px !important; font-weight: 600; border: 0 !important; border-radius: 0 !important; background: transparent !important; box-shadow: none !important; }
+.preview-toggle:hover:not(:disabled) { color: #0958d9 !important; background: transparent !important; }
+.preview-section ul { margin: 0; padding-left: 16px; }
+.preview-manage { width: 100%; margin-top: 12px; }
+
 .status-banner {
   min-height: 36px;
   margin-bottom: 10px;

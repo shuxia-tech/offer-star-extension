@@ -1,4 +1,5 @@
 import type { ResumeProfile, ResumeSummary } from "./messages";
+import { richTextToPlain } from "./rich-text";
 
 type LooseRecord = Record<string, unknown>;
 
@@ -9,6 +10,7 @@ export function normalizeResumeProfile(payload: unknown): ResumeProfile {
   const moduleMap = new Map<string, unknown>();
   for (const item of modules) {
     const module = asRecord(item);
+    if (module.hasEnable === false) continue;
     const type = String(module.moduleType ?? "");
     const content = parseModuleContent(module.moduleContent);
     moduleMap.set(type, content);
@@ -17,9 +19,23 @@ export function normalizeResumeProfile(payload: unknown): ResumeProfile {
   const basic = asRecord(moduleMap.get("个人信息") ?? moduleMap.get("基本信息"));
   const education = asArray(moduleMap.get("教育经历") ?? moduleMap.get("教育背景"));
   const workExperience = asArray(moduleMap.get("工作经历") ?? moduleMap.get("工作经验"));
+  const internship = asArray(moduleMap.get("实习经历") ?? moduleMap.get("实习经验"));
   const projectExperience = asArray(moduleMap.get("项目经历") ?? moduleMap.get("项目经验"));
-  const skillModule = asRecord(moduleMap.get("其他能力") ?? moduleMap.get("技能/证书/语言/兴趣爱好"));
+  const campusExperience = asArray(moduleMap.get("校园经历") ?? moduleMap.get("实践活动"));
+  const researchExperience = asArray(moduleMap.get("研究经历"));
+  const portfolio = asArray(moduleMap.get("作品集"));
+  const otherExperience = asArray(moduleMap.get("其他经历"));
+  const awards = asArray(moduleMap.get("荣誉奖项") ?? moduleMap.get("获奖经历") ?? moduleMap.get("荣誉证书"));
+  const skillModule = moduleMap.get("专业技能") ?? moduleMap.get("技能与证书") ?? moduleMap.get("其他能力") ?? moduleMap.get("技能/证书/语言/兴趣爱好");
   const advantageModule = asRecord(moduleMap.get("个人优势") ?? moduleMap.get("个人总结") ?? moduleMap.get("自我评价"));
+  const skills = readSkills(skillModule);
+  const honors = awards.map((item) => ({
+    name: plain(item.name ?? item.cert ?? item.title),
+    time: plain(item.time),
+    level: plain(item.level),
+    issuer: plain(item.issuer),
+    description: plain(item.description)
+  })).filter((item) => item.name || item.time || item.level || item.issuer || item.description);
 
   return {
     basic: {
@@ -35,33 +51,92 @@ export function normalizeResumeProfile(payload: unknown): ResumeProfile {
       wechat: stringValue(basic.wechat),
       website: stringValue(basic.website),
       github: stringValue(basic.github),
-      targetPosition: stringValue(basic.targetPosition)
+      gitee: stringValue(basic.gitee),
+      targetPosition: stringValue(basic.targetPosition),
+      height: stringValue(basic.height),
+      weight: stringValue(basic.width),
+      nation: stringValue(basic.nation),
+      nativePlace: stringValue(basic.nativePlace),
+      politicalOutlook: stringValue(basic.politicalOutlook),
+      maritalStatus: stringValue(basic.maritalStatus)
     },
     education: education.map((item) => ({
       school: stringValue(item.school),
       major: stringValue(item.profession ?? item.major),
-      degree: stringValue(item.degree)
+      degree: stringValue(item.degree),
+      startTime: stringValue(item.startTime ?? item.startDate),
+      endTime: stringValue(item.endTime ?? item.endDate),
+      description: plain(item.description)
     })),
-    workExperience: workExperience.map((item) => ({
+    workExperience: [...workExperience, ...internship].map((item) => ({
       company: stringValue(item.company),
       position: stringValue(item.position),
-      description: stringValue(item.description),
+      city: stringValue(item.city),
+      description: plain(item.description),
       startTime: stringValue(item.startTime ?? item.startDate),
       endTime: stringValue(item.endTime ?? item.endDate)
     })),
     projectExperience: projectExperience.map((item) => ({
       name: stringValue(item.name ?? item.projectName),
       role: stringValue(item.role),
-      description: stringValue(item.description),
+      description: plain(item.description),
       startTime: stringValue(item.startTime ?? item.startDate),
       endTime: stringValue(item.endTime ?? item.endDate)
     })),
-    skills: skillModule ? [
-      ...asStringArray(skillModule.skills ?? skillModule.description),
-      ...asStringArray(skillModule.technology)
-    ].filter(Boolean) : [],
-    selfIntroduction: stringValue(advantageModule?.description)
+    awards: honors.map((item) => item.name).filter(Boolean),
+    honors,
+    campusExperience: campusExperience.map(readActivity).filter(hasActivityContent),
+    researchExperience: researchExperience.map((item) => readActivity({ ...item, name: item.name ?? item.projectName })).filter(hasActivityContent),
+    portfolio: portfolio.map((item) => ({
+      name: stringValue(item.name),
+      url: stringValue(item.url),
+      description: plain(item.description)
+    })).filter((item) => item.name || item.url || item.description),
+    otherExperience: otherExperience.map(readActivity).filter(hasActivityContent),
+    skills: skills.skills,
+    skillsText: skills.skillsText,
+    selfIntroduction: plain(advantageModule.description)
   };
+}
+
+function plain(value: unknown) {
+  return richTextToPlain(stringValue(value));
+}
+
+function readActivity(item: LooseRecord) {
+  return {
+    name: stringValue(item.name),
+    role: stringValue(item.role),
+    section: stringValue(item.section),
+    address: stringValue(item.address),
+    description: plain(item.description),
+    startTime: stringValue(item.startTime ?? item.startDate),
+    endTime: stringValue(item.endTime ?? item.endDate)
+  };
+}
+
+function hasActivityContent(item: ReturnType<typeof readActivity>) {
+  return Boolean(item.name || item.role || item.section || item.address || item.description || item.startTime || item.endTime);
+}
+
+function readSkills(moduleValue: unknown) {
+  const record = asRecord(moduleValue);
+  if (Array.isArray(record.entries)) {
+    const lines = record.entries.map((entry) => {
+      const item = asRecord(entry);
+      const category = stringValue(item.category);
+      const items = plain(item.items);
+      return [category, items].filter(Boolean).join("：");
+    }).filter(Boolean);
+    return { skillsText: lines.join("\n"), skills: lines };
+  }
+  const skillsText = plain(record.description);
+  const skills = [
+    ...skillsText.split("\n").map((line) => line.replace(/^•\s*/, "").trim()).filter(Boolean),
+    ...asStringArray(record.skills),
+    ...asStringArray(record.technology)
+  ];
+  return { skillsText, skills: [...new Set(skills)] };
 }
 
 /** 将简历列表接口的分页结果转换成扩展需要的最小字段。 */

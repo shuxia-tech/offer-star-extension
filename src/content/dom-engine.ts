@@ -41,7 +41,55 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     return element.ownerDocument.defaultView ?? window;
   }
 
+  function cleanLabel(text: string) {
+    return text.replace(/\*/g, "").replace(/\s+/g, " ").trim();
+  }
+
+  /** Ant Design 字段标题在 .field-label 里，不能把重复的 id="value" 当成字段名。 */
+  function explicitFieldLabel(element: HTMLElement) {
+    const label = element.closest(".field-group")?.querySelector(".field-label");
+    return label ? cleanLabel(label.textContent ?? "") : "";
+  }
+
+  function isCollapsedGroup(element: HTMLElement) {
+    const group = element.closest(".field-group");
+    if (!(group instanceof HTMLElement)) return false;
+    const inlineWidth = group.style.width.trim();
+    const inlineHeight = group.style.height.trim();
+    if (inlineWidth === "0" || inlineWidth === "0px" || inlineHeight === "0" || inlineHeight === "0px") return true;
+    const style = ownerWindow(group).getComputedStyle(group);
+    return style.display === "none" || style.visibility === "hidden" || style.width === "0px" || style.height === "0px";
+  }
+
+  function isEffectivelyHidden(element: HTMLElement) {
+    let current: HTMLElement | null = element;
+    while (current) {
+      if (current.getAttribute("aria-hidden") === "true" || current.hasAttribute("hidden")) return true;
+      const style = ownerWindow(current).getComputedStyle(current);
+      if (style.display === "none" || style.visibility === "hidden") return true;
+      if (current === element.ownerDocument.body) break;
+      current = current.parentElement;
+    }
+    return false;
+  }
+
+  /** 手机号旁边的国家区号下拉不是电话号码本身。 */
+  function isPhoneCountryControl(element: HTMLElement) {
+    if (element.tagName === "INPUT" || element.tagName === "TEXTAREA" || element.tagName === "SELECT") return false;
+    const selectable = element.getAttribute("role") === "combobox" || element.getAttribute("aria-haspopup") === "listbox" || Boolean(element.closest(".ant-select"));
+    return selectable && /手机|电话/.test(explicitFieldLabel(element));
+  }
+
+  function isNoiseControl(element: HTMLElement) {
+    if (element.closest(".ant-select-dropdown, .ant-calendar-picker-container, .filevalues_Placeholder, .tailoring-container")) return true;
+    if ((element as HTMLInputElement).disabled || element.getAttribute("aria-disabled") === "true") return true;
+    if (isCollapsedGroup(element) || isEffectivelyHidden(element) || isPhoneCountryControl(element)) return true;
+    return false;
+  }
+
   function labelFor(element: HTMLElement) {
+    const explicit = explicitFieldLabel(element);
+    if (explicit) return explicit;
     const input = element as HTMLInputElement;
     const root = element.getRootNode() as Document | ShadowRoot;
     const labelledBy = input.getAttribute("aria-labelledby")?.split(/\s+/).map((id) => root.getElementById?.(id)?.textContent).filter(Boolean).join(" ");
@@ -75,7 +123,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
   }
 
   function controls() {
-    return queryAllDeep<HTMLElement>("input:not([type=hidden]), textarea, select, [contenteditable=true], [role=combobox], [role=checkbox], [role=radio], [aria-haspopup=listbox]");
+    return queryAllDeep<HTMLElement>("input:not([type=hidden]), textarea, select, [contenteditable=true], [role=combobox], [role=checkbox], [role=radio], [aria-haspopup=listbox]").filter((element) => !isNoiseControl(element));
   }
 
   function scan() {
@@ -119,14 +167,25 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     if (element.tagName === "INPUT" && ["radio", "checkbox"].includes((element as HTMLInputElement).type)) {
       const input = element as HTMLInputElement;
       if (input.type === "radio") {
-        const group = input.name ? queryAllDeep<HTMLInputElement>("input[type=radio]").filter((item) => item.name === input.name) : [input];
+        const named = input.name ? queryAllDeep<HTMLInputElement>("input[type=radio]").filter((item) => item.name === input.name) : [];
+        const scope = input.closest(".ant-radio-group, [role=radiogroup], fieldset, .field-group");
+        const group = named.length ? named : scope ? Array.from(scope.querySelectorAll<HTMLInputElement>("input[type=radio]")) : [input];
         if (!value) {
           group.forEach((item) => { item.checked = false; });
           return true;
         }
-        const target = group.find((item) => item.value === value || item.closest("label")?.textContent?.trim().includes(value));
+        const wanted = value.replace(/\s+/g, "");
+        const target = group.find((item) => {
+          const text = `${item.value} ${item.closest("label")?.textContent ?? ""}`.replace(/\s+/g, "");
+          return item.value === value || text.includes(wanted);
+        });
         if (!target) return false;
         target.checked = true;
+        const EventConstructor = ownerWindow(target).Event;
+        target.dispatchEvent(new EventConstructor("input", { bubbles: true }));
+        target.dispatchEvent(new EventConstructor("change", { bubbles: true }));
+        target.dispatchEvent(new EventConstructor("blur", { bubbles: true }));
+        return true;
       } else {
         const labelText = input.closest("label")?.textContent ?? input.parentElement?.textContent ?? "";
         if (/同意|协议|隐私|授权|营销/.test(labelText)) return false;
@@ -176,6 +235,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
         return true;
       }
       await element.click();
+      revealAntMenu(element);
       if (element.tagName === "INPUT") {
         const input = element as HTMLInputElement;
         Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(input, value);
@@ -187,11 +247,11 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
       let option: HTMLElement | undefined;
       // 虚拟列表/异步请求可能稍晚插入候选项，最多等待 8 轮，避免无限等待。
       for (let attempt = 0; attempt < 8 && !option; attempt += 1) {
-        option = queryAllDeep<HTMLElement>("[role=option], [data-value]").find((item) => {
-          const text = item.textContent?.trim() ?? "";
-          const optionValue = item.getAttribute("data-value") ?? "";
-          return isVisible(item) && candidates.some((candidate) => text === candidate || text.includes(candidate) || optionValue === candidate);
-        });
+        revealAntMenu(element);
+        const menuId = element.getAttribute("aria-controls");
+        const menu = menuId ? element.ownerDocument.getElementById(menuId) : null;
+        const scoped = menu ? Array.from(menu.querySelectorAll<HTMLElement>("[role=option], [data-value]")) : [];
+        option = pickOption(scoped, candidates) ?? pickOption(queryAllDeep<HTMLElement>("[role=option], [data-value]"), candidates);
         if (!option) {
           // 虚拟列表只渲染可视区域，滚动列表容器后再查找一次目标项。
           for (const listbox of queryAllDeep<HTMLElement>("[role=listbox]")) {
@@ -206,18 +266,104 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
       }
       if (!option) return false;
       await option.click();
+      const selected = element.querySelector(".ant-select-selection-selected-value");
+      if (selected) selected.textContent = cleanLabel(option.textContent ?? value);
+      const optionText = cleanLabel(option.textContent ?? value);
+      commitVueValue(element, optionText || value);
+    } else if (isAntDateInput(element)) {
+      const formatted = formatAntDate(value);
+      const momentFactory = (ownerWindow(element) as Window & { moment?: (input: string) => unknown }).moment;
+      if (momentFactory && commitVueValue(element, momentFactory(formatted))) return true;
+      element.setAttribute("data-offer-star-kind", "date");
+      const committed = commitVueValue(element, formatted, true);
+      element.removeAttribute("data-offer-star-kind");
+      if (committed) return true;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(element, formatted);
     } else {
       const input = element as HTMLInputElement | HTMLTextAreaElement;
       const prototype = element.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       const inputType = element.tagName === "INPUT" ? (input as HTMLInputElement).type : "";
-      const normalizedValue = inputType === "date" || inputType === "month" ? normalizeDateValue(value, inputType) : value;
+      const normalizedValue = inputType === "date" || inputType === "month" ? normalizeDateValue(value, inputType) : normalizePhoneValue(element, value);
       Object.getOwnPropertyDescriptor(prototype, "value")?.set?.call(input, normalizedValue);
+      if (element.classList.contains("ant-input") || element.closest(".ant-form")) commitVueValue(element, normalizedValue, true);
     }
     const EventConstructor = ownerWindow(element).Event;
     element.dispatchEvent(new EventConstructor("input", { bubbles: true }));
     element.dispatchEvent(new EventConstructor("change", { bubbles: true }));
     element.dispatchEvent(new EventConstructor("blur", { bubbles: true }));
     return true;
+  }
+
+  function revealAntMenu(element: HTMLElement) {
+    const menuId = element.getAttribute("aria-controls");
+    if (!menuId) return;
+    const menu = element.ownerDocument.getElementById(menuId);
+    const dropdown = menu?.closest(".ant-select-dropdown");
+    if (dropdown instanceof HTMLElement) dropdown.style.display = "block";
+  }
+
+  function optionScore(text: string, optionValue: string, candidates: string[]) {
+    const clean = cleanLabel(text);
+    let best = 0;
+    for (const candidate of candidates) {
+      const wanted = cleanLabel(candidate);
+      if (!wanted) continue;
+      if (clean === wanted || optionValue === wanted) best = Math.max(best, 3);
+      else if (clean.startsWith(wanted)) best = Math.max(best, 2);
+      else if (wanted.length >= 2 && (clean.includes(wanted) || optionValue.includes(wanted))) best = Math.max(best, 1);
+    }
+    return best;
+  }
+
+  function pickOption(pool: HTMLElement[], candidates: string[]) {
+    let best: { option: HTMLElement; score: number } | undefined;
+    for (const item of pool) {
+      if (!isVisible(item)) continue;
+      const score = optionScore(item.textContent ?? "", item.getAttribute("data-value") ?? "", candidates);
+      if (score > (best?.score ?? 0)) best = { option: item, score };
+    }
+    return best?.option;
+  }
+
+  function commitVueValue(element: HTMLElement, value: unknown, askPage = false) {
+    try {
+      let current: HTMLElement | null = element;
+      for (let depth = 0; current && depth < 8; current = current.parentElement, depth += 1) {
+        const vue = (current as HTMLElement & { __vue__?: { form?: { setFieldsValue?: (fields: Record<string, unknown>) => void } } }).__vue__;
+        if (!vue?.form?.setFieldsValue) continue;
+        vue.form.setFieldsValue({ value });
+        return true;
+      }
+    } catch {
+      // 内容脚本看不到页面世界里的 Vue 实例，交给页面桥接处理。
+    }
+    if (!askPage || (typeof value !== "string" && typeof value !== "number")) return false;
+    element.setAttribute("data-offer-star-pending", String(value));
+    element.dispatchEvent(new CustomEvent("offer-star-commit-field", { bubbles: true }));
+    const committed = element.getAttribute("data-offer-star-vue") === "ok";
+    element.removeAttribute("data-offer-star-pending");
+    element.removeAttribute("data-offer-star-vue");
+    return committed;
+  }
+
+  function isAntDateInput(element: HTMLElement) {
+    return element.classList.contains("ant-calendar-picker-input") || Boolean((element as HTMLInputElement).readOnly && element.closest(".ant-calendar-picker"));
+  }
+
+  /** 按天选择的日期控件需要完整日期；只有年月时补 1 日，避免被页面校验清空。 */
+  function formatAntDate(value: string) {
+    const match = value.trim().match(/^(\d{4})[年./-](\d{1,2})(?:[月./-](\d{1,2}))?/);
+    if (!match) return value.trim();
+    const day = (match[3] ?? "01").padStart(2, "0");
+    return `${match[1]}-${match[2].padStart(2, "0")}-${day}`;
+  }
+
+  function normalizePhoneValue(element: HTMLElement, value: string) {
+    const group = element.closest(".field-group");
+    if (group?.querySelector("[role=combobox], .ant-select") && /手机|电话/.test(explicitFieldLabel(element))) {
+      return value.replace(/^\+?86[-\s]?/, "");
+    }
+    return value;
   }
 
   function normalizeDateValue(value: string, inputType: string) {
@@ -249,7 +395,11 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
       const input = element as HTMLInputElement;
       return input.checked ? (input.value || "true") : "";
     }
-    if (element.getAttribute("role") === "combobox" || element.getAttribute("aria-haspopup") === "listbox") return element.getAttribute("data-value") ?? ("value" in element ? String((element as HTMLInputElement).value ?? "") : "");
+    if (element.getAttribute("role") === "combobox" || element.getAttribute("aria-haspopup") === "listbox") {
+      const selectedText = cleanLabel(element.querySelector(".ant-select-selection-selected-value")?.textContent ?? "");
+      if (selectedText) return selectedText;
+      return element.getAttribute("data-value") ?? ("value" in element ? String((element as HTMLInputElement).value ?? "") : "");
+    }
     return "value" in element ? String((element as HTMLInputElement).value ?? "") : "";
   }
 
@@ -258,7 +408,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
       const groups: Array<{ keys: string[]; buttonPattern: RegExp }> = [
         { keys: ["company", "position", "startDate", "endDate", "description"], buttonPattern: /(新增|添加|继续添加).*(工作|经历|任职)/i },
         { keys: ["projectName", "projectRole", "projectStartDate", "projectEndDate", "projectDescription"], buttonPattern: /(新增|添加|继续添加).*(项目|项目经历|作品)/i },
-        { keys: ["school", "major", "degree"], buttonPattern: /(新增|添加|继续添加).*(教育|学校|学历)/i }
+        { keys: ["school", "major", "degree", "majorCategory", "educationStartDate", "educationEndDate"], buttonPattern: /(新增|添加|继续添加).*(教育|学校|学历)/i }
       ];
     for (const group of groups) {
       const requested = Math.max(...group.keys.map((key) => {
@@ -282,17 +432,22 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     }
   }
 
-  async function fill(values: Record<string, FieldValue>, mode: "incremental" | "overwrite") {
-    const filled: string[] = [];
-    const failed: string[] = [];
-    const failureReasons: Record<string, string> = {};
-    fillHistory.reset();
-    await expandRepeatedSections(values);
+  function fieldAt(currentFields: DetectedField[], occurrence: number) {
+    const grouped = currentFields.find((field) => controls()[field.elementIndex]?.closest("[groupindex]")?.getAttribute("groupindex") === String(occurrence));
+    if (grouped) return grouped;
+    const hasGroups = currentFields.some((field) => controls()[field.elementIndex]?.closest("[groupindex]"));
+    return hasGroups ? undefined : currentFields[occurrence];
+  }
+
+  async function writeFields(values: Record<string, FieldValue>, mode: "incremental" | "overwrite", filled: string[], failed: string[], failureReasons: Record<string, string>, only?: Set<string>) {
+    const misses: string[] = [];
     for (const [key, nextValue] of Object.entries(values)) {
       if (key === "photo" || key === "attachment") continue;
       const valuesForKey = Array.isArray(nextValue) ? nextValue : [nextValue];
       for (let index = 0; index < valuesForKey.length; index += 1) {
         const failedKey = Array.isArray(nextValue) ? `${key}[${index + 1}]` : key;
+        if (only && !only.has(failedKey)) continue;
+        if (!String(valuesForKey[index] ?? "").trim()) continue;
         const validationError = validateFieldValue(key, valuesForKey[index]);
         if (validationError) {
           failed.push(failedKey);
@@ -301,11 +456,12 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
         }
         // 每次写入前重新扫描，兼容 React/Vue 输入事件导致的节点替换。
         const currentFields = scan().filter((item) => item.key === key);
-        const field = currentFields[index];
+        const field = fieldAt(currentFields, index);
         const element = field ? controls()[field.elementIndex] : undefined;
         if (!element) {
           failed.push(failedKey);
           failureReasons[failedKey] = "没有找到对应页面控件";
+          misses.push(failedKey);
           continue;
         }
         const previousValue = currentValue(element);
@@ -319,7 +475,41 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
         }
       }
     }
-    console.warn("[Offer Star][Content] 填写失败明细", { 失败字段: failed, 失败原因: failureReasons });
+    return misses;
+  }
+
+  /** 只确认当前正在编辑的经历段，不点击申请、提交或投递。 */
+  async function confirmEditedSegments() {
+    const buttons = queryAllDeep<HTMLButtonElement>("button").filter((button) => {
+      const text = cleanLabel(button.textContent ?? "");
+      if (text !== "确认") return false;
+      if (!button.closest(".edit_mode, .section-list, .submite")) return false;
+      if (button.closest("form") && button.getAttribute("type") !== "button") return false;
+      return !button.disabled && button.getAttribute("aria-disabled") !== "true" && isVisible(button);
+    });
+    for (const button of buttons) await button.click();
+  }
+
+  async function fill(values: Record<string, FieldValue>, mode: "incremental" | "overwrite") {
+    const filled: string[] = [];
+    const failed: string[] = [];
+    const failureReasons: Record<string, string> = {};
+    fillHistory.reset();
+    await expandRepeatedSections(values);
+    const misses = await writeFields(values, mode, filled, failed, failureReasons);
+    if (misses.length) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      await expandRepeatedSections(values);
+      for (const miss of misses) {
+        const index = failed.indexOf(miss);
+        if (index >= 0) failed.splice(index, 1);
+        delete failureReasons[miss];
+      }
+      await writeFields(values, mode, filled, failed, failureReasons, new Set(misses));
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await confirmEditedSegments();
+    if (failed.length) console.warn("[Offer Star][Content] 填写失败明细", { 失败数量: failed.length });
     return { filled, failed, failureReasons };
   }
 
@@ -352,8 +542,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
   }
 
   function isVisible(element: HTMLElement) {
-    const styles = ownerWindow(element).getComputedStyle(element);
-    return element.getAttribute("hidden") === null && element.getAttribute("aria-hidden") !== "true" && styles.display !== "none" && styles.visibility !== "hidden";
+    return !isEffectivelyHidden(element);
   }
 
   async function fillPhoto(dataUrl: string, fileName: string, mimeType: string) {

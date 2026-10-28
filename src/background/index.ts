@@ -6,6 +6,7 @@ import { RESUME_SESSION_STORAGE_KEYS } from "../shared/auth-session";
 import { requestResumeApi, ResumeSessionExpiredError } from "../shared/resume-request";
 import { clearResumeCacheKeys, isResumeCacheFresh, profileCacheKey, RESUME_LIST_CACHE_KEY, type CachedResumeList, type CachedResumeProfile } from "../shared/resume-cache";
 import { shouldForwardPageChange } from "../shared/page-change-routing";
+import { pageRelayRequest } from "../shared/page-relay";
 import { buildResumeManageUrl } from "../shared/resume-manage-url";
 import { buildAiRequestBody, sanitizePageUrl } from "../shared/privacy";
 import { isOfferStarPage, reconnectOfferStarLogin } from "../shared/login-reconnect";
@@ -153,6 +154,14 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRe
     void analyzePageWithAi(message).then(sendResponse).catch((error) => {
       console.error("[Offer Star][Background] AI 页面分析失败", error);
       sendResponse({ error: error instanceof Error ? error.message : "AI 分析失败" });
+    });
+    return true;
+  }
+  const runtimeWithUrl = browser.runtime as typeof browser.runtime & { getURL: (path: string) => string };
+  const relay = pageRelayRequest(message, Boolean(sender.url?.startsWith(runtimeWithUrl.getURL(""))));
+  if (relay) {
+    browser.tabs.sendMessage(relay.tabId, relay.message).then(sendResponse).catch(() => {
+      sendResponse({ relayError: "无法连接当前页面，请刷新后重试" });
     });
     return true;
   }

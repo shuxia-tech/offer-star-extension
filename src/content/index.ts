@@ -4,6 +4,7 @@ import { createDomEngine } from "./dom-engine";
 import { extractPageContext } from "../shared/page-context";
 import { installNavigationObserver } from "../shared/navigation-observer";
 import { installFormMutationObserver } from "../shared/form-mutation-observer";
+import { AUTOFILL_FORM_NOTICE_SETTLE_MS, createFormNoticeGate } from "../shared/form-notice-gate";
 import { shouldReportPageChange } from "../shared/page-change-routing";
 import { mountFloatingLauncher, mountFloatingPanel, setFloatingLauncherVisible, unmountFloatingPanel } from "./floating-launcher";
 import { shouldRequestLoginWindowClose, shouldSyncOfferStarLogin } from "../shared/login-window";
@@ -14,7 +15,10 @@ import { withRequestTimeout } from "../shared/request-timeout";
 
 let engine = createDomEngine(document, location.href);
 let hasScanned = false;
-let suppressFormMutationNotice = false;
+const formNoticeGate = createFormNoticeGate(
+  (callback, milliseconds) => window.setTimeout(callback, milliseconds),
+  (id) => window.clearTimeout(id as number)
+);
 
 installNavigationObserver(window, ({ url, reason }) => {
   engine = createDomEngine(document, url);
@@ -27,10 +31,10 @@ installNavigationObserver(window, ({ url, reason }) => {
 });
 
 installFormMutationObserver(document, () => {
-  if (!hasScanned || !shouldReportPageChange(location.href)) return;
+  if (!hasScanned || formNoticeGate.isHeld() || !shouldReportPageChange(location.href)) return;
   console.info("[Offer Star][Content] 检测到表单结构异步更新，提示重新扫描", { 地址: sanitizePageUrl(location.href) });
   void browser.runtime.sendMessage({ type: "PAGE_FORM_CHANGED", url: location.href });
-}, () => suppressFormMutationNotice);
+}, () => formNoticeGate.isHeld());
 
 // 在网页右下角提供轻量入口，用户不需要反复打开浏览器工具栏。
 const openFloatingPanel = () => {
@@ -70,7 +74,16 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendR
       sendResponse({ fields: [], blockedReason });
       return false;
     }
-    void engine.scanDeep().then((fields) => { hasScanned = true; sendResponse({ fields }); });
+    formNoticeGate.engage();
+    void engine.scanDeep().then((fields) => {
+      hasScanned = true;
+      formNoticeGate.releaseAfter(AUTOFILL_FORM_NOTICE_SETTLE_MS);
+      sendResponse({ fields });
+    }).catch((error) => {
+      formNoticeGate.releaseAfter(0);
+      console.error("[Offer Star][Content] 页面扫描失败", error);
+      sendResponse({ fields: [], blockedReason: "页面扫描失败，请展开申请表后重试" });
+    });
     return true;
   }
   if (message.type === "OPEN_FLOATING_PANEL") {
@@ -82,8 +95,10 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendR
     return false;
   }
   if (message.type === "FILL_FIELDS") {
-    suppressFormMutationNotice = true;
-    void engine.fill(message.values, message.mode).then(sendResponse).finally(() => { suppressFormMutationNotice = false; });
+    formNoticeGate.engage();
+    void engine.fill(message.values, message.mode).then(sendResponse).finally(() => {
+      formNoticeGate.releaseAfter(AUTOFILL_FORM_NOTICE_SETTLE_MS);
+    });
     return true;
   }
   if (message.type === "UNDO_FILL") {

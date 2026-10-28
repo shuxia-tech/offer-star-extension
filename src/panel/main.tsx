@@ -1,29 +1,27 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import type { AiAnalysisResult, DetectedField, FieldKey, FilePayload, ResumeProfile, ResumeSummary, UserProfile } from "../shared/messages";
+import type { AiAnalysisResult, DetectedField, ExtensionMessage, FieldKey, FilePayload, PageCommand, ResumeProfile, ResumeSummary, UserProfile } from "../shared/messages";
 import { browser } from "wxt/browser";
 import { getSiteAdapter } from "../shared/site-adapters";
 import { applyAiMappings, applyManualFieldConfirmation, filterValuesByConfidence } from "../shared/ai-mapping";
 import { buildResumeFieldValues } from "../shared/fill-values";
-import { draftOverridesFromResult, rejectDraft } from "../shared/draft-state";
+import { draftOverridesFromResult } from "../shared/draft-state";
 import { FORM_UPDATED_NOTICE, LOGIN_FORM_NOTICE_SUPPRESS_MS, formNoticeAfterLogin, getStalePageMessage, shouldSuppressFormNotice } from "./page-guards";
+import { AUTOFILL_FORM_NOTICE_SETTLE_MS } from "../shared/form-notice-gate";
 import { shouldAcceptPageChangeForPanel, shouldReportPageChange } from "../shared/page-change-routing";
 import { clearResumeSessionState, shouldResetSessionOnPoll } from "../shared/auth-session";
-import { buildFillPreview } from "../shared/fill-preview";
-import { normalizeFillMode, resolvePreferredResumeId, type FillMode } from "../shared/panel-preferences";
-import { isSensitiveFieldLabel } from "../shared/field-matching";
+import { decideAutofillResume, normalizeFillMode, resolvePreferredResumeId, type FillMode } from "../shared/panel-preferences";
 import { getPageContextChangedMessage } from "../shared/page-context-state";
 import { formatSiteMetric, recordSiteFillMetric, type SiteMetric, type SiteMetrics } from "../shared/site-metrics";
 import { buildFailureReport, stringifyFailureReport, type FailureReport } from "../shared/failure-report";
 import { applySavedFieldOverrides, saveFieldOverride, type SiteFieldOverrides } from "../shared/site-field-overrides";
-import { canQuickFill } from "../shared/quick-fill";
 import { canApplyAiResult } from "../shared/ai-result-guard";
-import { describeAttachment, removeAttachmentAt } from "../shared/attachment-preview";
-import { aiConfidenceLevel, formatAiConfidence } from "../shared/ai-display";
+import { removeAttachmentAt } from "../shared/attachment-preview";
 import { nextResumeIndex } from "../shared/resume-menu";
 import { hasExtensionTokenChange } from "../shared/storage-change";
 import { buildAiRequestBody, sanitizePageUrl, sanitizeText } from "../shared/privacy";
 import { withRequestTimeout } from "../shared/request-timeout";
+import { ResumePreview, ResumePreviewSkeleton } from "./resume-preview";
 import "./styles.css";
 
 /** 将浏览器消息异常转换为用户可以直接采取行动的中文提示。 */
@@ -99,8 +97,12 @@ function App() {
   const pageRevisionRef = useRef(0);
   const messageRef = useRef(message);
   const suppressFormNoticeUntilRef = useRef(0);
+  const autofillOwnsPageRef = useRef(false);
+  const autofillGenerationRef = useRef(0);
   const aiRequestRef = useRef(0);
   const [pageStale, setPageStale] = useState(false);
+  const [panelTab, setPanelTab] = useState<"fill" | "preview">("fill");
+  const [minutesSaved, setMinutesSaved] = useState(0);
   const fieldOptions: Array<[FieldKey, string]> = [
     ["name", "姓名"], ["phone", "手机号"], ["email", "邮箱"], ["city", "城市"], ["targetCity", "期望城市"],
     ["age", "年龄"], ["gender", "性别"], ["currentStatus", "求职状态"], ["targetSalary", "期望薪资"], ["wechat", "微信"],
@@ -123,6 +125,13 @@ function App() {
   }, [message]);
 
   useEffect(() => {
+    void browser.storage.local.get("autofillMinutesSaved").then((stored) => {
+      const value = stored.autofillMinutesSaved;
+      if (typeof value === "number" && Number.isFinite(value) && value >= 0) setMinutesSaved(Math.floor(value));
+    });
+  }, []);
+
+  useEffect(() => {
     if (!resumeMenuOpen) return;
     const closeWhenOutside = (event: PointerEvent) => {
       if (!resumePickerRef.current?.contains(event.target as Node)) setResumeMenuOpen(false);
@@ -143,16 +152,29 @@ function App() {
     resumePickerRef.current?.querySelector<HTMLElement>(`[data-resume-option-index="${resumeFocusIndex}"]`)?.focus();
   }, [resumeMenuOpen, resumeFocusIndex]);
 
-  async function getTargetTab() {
+  async function getTargetTab(): Promise<{ id?: number; url?: string; title?: string }> {
     if (Number.isInteger(fallbackTabId) && fallbackTabId > 0) {
+      if (!browser.tabs?.get) return { id: fallbackTabId };
       try {
         return await browser.tabs.get(fallbackTabId);
       } catch (error) {
-        console.warn("[Offer Star][FloatingPanel] 回退目标标签页不可用，改用当前活动页", error);
+        console.warn("[Offer Star][FloatingPanel] 回退目标标签页不可用，改用已记录的标签页", error);
+        return { id: fallbackTabId };
       }
     }
-    const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
-    return tab;
+    if (browser.tabs?.query) {
+      const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
+      if (tab?.id) return tab;
+    }
+    const current = await browser.runtime.sendMessage({ type: "GET_CURRENT_TAB_ID" }).catch(() => null) as { tabId?: number | null } | null;
+    return { id: current?.tabId ?? undefined };
+  }
+
+  async function sendToPage(tabId: number, message: PageCommand) {
+    if (browser.tabs?.sendMessage) return browser.tabs.sendMessage(tabId, message);
+    const result = await browser.runtime.sendMessage({ type: "RELAY_PAGE_MESSAGE", tabId, message } satisfies ExtensionMessage);
+    if (result && typeof result === "object" && "relayError" in result && result.relayError) throw new Error(String(result.relayError));
+    return result;
   }
 
   useEffect(() => {
@@ -202,7 +224,7 @@ function App() {
       if (message.url && !shouldReportPageChange(message.url)) return;
       if (!shouldAcceptPageChangeForPanel(fallbackTabId, message.tabId)) return;
       if (message.type === "PAGE_FORM_CHANGED") {
-        if (shouldSuppressFormNotice(suppressFormNoticeUntilRef.current, Date.now())) return;
+        if (shouldSuppressFormNotice(suppressFormNoticeUntilRef.current, Date.now()) || autofillOwnsPageRef.current) return;
         pageRevisionRef.current += 1;
         setPageStale(true);
         setMessage(FORM_UPDATED_NOTICE);
@@ -283,6 +305,7 @@ function App() {
       const list = result as ResumeSummary[];
       setAuthState("signed-in");
       setResumes(list);
+      if (list[0]?.id) setSelectedResumeId(list[0].id);
       void withRequestTimeout(browser.runtime.sendMessage({ type: "GET_USER_PROFILE" }), 10000, "用户资料加载超时")
         .then((profileResult) => {
           if (requestId !== resumeListRequestRef.current || profileResult?.error) return;
@@ -386,14 +409,92 @@ function App() {
     setResumeFocusIndex(0);
     try {
       const result = await withRequestTimeout(browser.runtime.sendMessage({ type: "GET_RESUME_PROFILE", resumeId }), 15000, "简历内容加载超时，请重新选择简历");
-      if (requestId !== resumeProfileRequestRef.current) return;
+      if (requestId !== resumeProfileRequestRef.current) return null;
       if (result?.error) throw new Error(result.error);
-      setResume(result as ResumeProfile);
+      const profile = result as ResumeProfile;
+      setResume(profile);
       console.info("[Offer Star][FloatingPanel] 当前简历加载成功", { 简历编号: resumeId });
+      return profile;
     } catch (error) {
-      if (requestId !== resumeProfileRequestRef.current) return;
+      if (requestId !== resumeProfileRequestRef.current) return null;
       console.error("[Offer Star][FloatingPanel] 当前简历加载失败", error);
       setMessage(error instanceof Error ? error.message : "简历内容加载失败");
+      return null;
+    }
+  }
+
+  async function autofillPage() {
+    if (authState !== "signed-in") {
+      await openOfferStarLogin();
+      return;
+    }
+    const decision = decideAutofillResume(resumes, selectedResumeId, Boolean(resume));
+    if (decision.type === "missing") {
+      setPanelTab("preview");
+      setMessage("还没有可用简历，请先在 Offer Star 创建一份简历");
+      return;
+    }
+    if (decision.reload) setMessage("正在读取简历…");
+    const profile = decision.reload ? await loadResumeProfile(decision.resumeId) : resume;
+    if (!profile) return;
+    console.info("[Offer Star][FloatingPanel] 用户点击自动填充");
+    const generation = autofillGenerationRef.current + 1;
+    autofillGenerationRef.current = generation;
+    autofillOwnsPageRef.current = true;
+    setPageStale(false);
+    setPhase("filling");
+    setSecurityBlocked(false);
+    setMessage("正在识别并填写当前页面…");
+    try {
+      const tab = await getTargetTab();
+      if (!tab.id) { setPhase("ready"); setMessage("无法访问当前页面"); return; }
+      const scan = await sendToPage(tab.id, { type: "SCAN_PAGE" });
+      if (scan?.blockedReason) {
+        setPhase("ready");
+        setSecurityBlocked(true);
+        setMessage(scan.blockedReason);
+        return;
+      }
+      const adapter = getSiteAdapter(tab.url ?? "");
+      const stored = await browser.storage.local.get("siteFieldOverrides");
+      const scanned = applySavedFieldOverrides(scan?.fields ?? [], adapter.id, (stored.siteFieldOverrides ?? {}) as SiteFieldOverrides);
+      setFields(scanned);
+      setPageStale(false);
+      const values = filterValuesByConfidence(buildResumeFieldValues(profile, draftOverrides), scanned);
+      const recognized = scanned.filter((field) => field.key).length;
+      const hasResumeValue = Object.values(values).some((value) => Array.isArray(value) ? value.some((item) => String(item).trim()) : String(value ?? "").trim());
+      const result = await sendToPage(tab.id, { type: "FILL_FIELDS", values, mode: "incremental" });
+      const filledCount = result?.filled?.length ?? 0;
+      const failedCount = (result?.failed ?? []).length;
+      const metricStore = await browser.storage.local.get("siteMetrics");
+      const nextMetrics = recordSiteFillMetric((metricStore.siteMetrics ?? {}) as SiteMetrics, adapter.id, filledCount, failedCount);
+      await browser.storage.local.set({ siteMetrics: nextMetrics });
+      setPhase("done");
+      if (filledCount > 0) {
+        const minuteStore = await browser.storage.local.get("autofillMinutesSaved");
+        const current = typeof minuteStore.autofillMinutesSaved === "number" ? minuteStore.autofillMinutesSaved : minutesSaved;
+        const next = current + 2;
+        await browser.storage.local.set({ autofillMinutesSaved: next });
+        setMinutesSaved(next);
+        setMessage("已填入当前页面，请核对后再手动提交");
+      } else if (recognized === 0) {
+        setMessage("没有识别到可填写的输入框，请先展开申请表");
+      } else if (!hasResumeValue) {
+        setMessage("简历里没有能对上的内容，请先打开简历预览确认");
+      } else if (failedCount > 0) {
+        setMessage("识别到了表单，但页面没有接住填写，请再试一次");
+      } else {
+        setMessage("这些位置已经有内容，这次没有覆盖");
+      }
+      console.info("[Offer Star][FloatingPanel] 自动填充完成", { 成功数量: filledCount, 失败数量: failedCount });
+    } catch (error) {
+      setPhase("ready");
+      setMessage(formatPageOperationError(error, "自动填充"));
+      console.error("[Offer Star][FloatingPanel] 自动填充失败", error);
+    } finally {
+      window.setTimeout(() => {
+        if (autofillGenerationRef.current === generation) autofillOwnsPageRef.current = false;
+      }, AUTOFILL_FORM_NOTICE_SETTLE_MS);
     }
   }
 
@@ -406,8 +507,8 @@ function App() {
     try {
       const tab = await getTargetTab();
       if (!tab.id) { setPhase("ready"); setMessage("无法访问当前页面"); return; }
-      const result = await browser.tabs.sendMessage(tab.id, { type: "SCAN_PAGE" });
-      const context = await browser.tabs.sendMessage(tab.id, { type: "GET_PAGE_CONTEXT" }).catch(() => null);
+      const result = await sendToPage(tab.id, { type: "SCAN_PAGE" });
+      const context = await sendToPage(tab.id, { type: "GET_PAGE_CONTEXT" }).catch(() => null);
       const adapter = getSiteAdapter(tab.url ?? "");
       const siteId = adapter.id;
       setSiteName(adapter.name);
@@ -466,7 +567,7 @@ function App() {
       if (!tab.id) { setPhase("review"); setMessage("无法访问当前页面"); return; }
       if (!resume) { setPhase("review"); setMessage("请先选择一份简历"); return; }
       const values = filterValuesByConfidence(buildResumeFieldValues(resume, draftOverrides), fields);
-      const result = await browser.tabs.sendMessage(tab.id, { type: "FILL_FIELDS", values, mode: fillMode });
+      const result = await sendToPage(tab.id, { type: "FILL_FIELDS", values, mode: fillMode });
       setPhase("done");
       const failed = (result?.failed ?? []) as string[];
       const failureReasons = (result?.failureReasons ?? {}) as Record<string, string>;
@@ -496,7 +597,7 @@ function App() {
     try {
       const tab = await getTargetTab();
       if (!tab.id) { setMessage("无法访问当前页面"); return; }
-      const result = await browser.tabs.sendMessage(tab.id, { type: "UNDO_FILL" });
+      const result = await sendToPage(tab.id, { type: "UNDO_FILL" });
       setMessage(`已撤销 ${result?.restored?.length ?? 0} 个字段，请重新检查页面`);
       setPhase("review");
     } catch (error) {
@@ -512,7 +613,7 @@ function App() {
     try {
       const tab = await getTargetTab();
       if (!tab.id) { setMessage("无法访问当前页面"); return; }
-      const result = await browser.tabs.sendMessage(tab.id, { type: "ADVANCE_FORM_STEP" });
+      const result = await sendToPage(tab.id, { type: "ADVANCE_FORM_STEP" });
       if (!result?.advanced) {
         setMessage("没有找到安全的下一步按钮，请手动操作页面");
         return;
@@ -584,7 +685,7 @@ function App() {
     try {
       const tab = await getTargetTab();
       if (!tab.id) { setMessage("无法访问当前页面"); return; }
-      const result = await browser.tabs.sendMessage(tab.id, { type: "FILL_FILES", files: photoData });
+      const result = await sendToPage(tab.id, { type: "FILL_FILES", files: photoData });
       const failed = Array.isArray(result?.failed) ? result.failed as string[] : [];
       if (!result?.filled) {
         setMessage("没有找到可用的附件上传控件，请检查页面是否已展开上传区域");
@@ -634,25 +735,8 @@ function App() {
     setMessage(next.length ? `已保留 ${next.length} 个待确认附件` : "已清空待确认附件");
   }
 
-  const matched = fields.filter((field) => field.key && field.confidence >= 0.7 && field.key !== "photo" && field.key !== "attachment");
-  const pending = fields.filter((field) => !field.key || field.confidence < 0.7 || isSensitiveFieldLabel(field.label) || field.key === "photo" || field.key === "attachment");
-  const previewValues = resume ? filterValuesByConfidence(buildResumeFieldValues(resume, draftOverrides), fields) : {};
-  const fillPreview = buildFillPreview(fields, previewValues);
   const selectedResume = resumes.find((item) => item.id === selectedResumeId);
-  const pageContextState = securityBlocked ? "security" : phase === "done" ? "done" : "pending";
-  const pageContextLabel = securityBlocked ? "需验证" : phase === "done" ? "已填写" : "待填写";
   const userInitial = (userProfile?.nickname || "Offer Star").slice(0, 1).toUpperCase();
-
-  const renderFieldRow = (field: DetectedField) => <li className="field-row" key={field.id}>
-    <span className="field-row-copy">
-      <strong>{field.label || "未命名字段"}</strong>
-      <small>{field.key === "photo" ? "请选择照片" : field.key === "attachment" ? "请选择附件" : isSensitiveFieldLabel(field.label) ? "敏感问题，请手动填写" : field.confidence < 0.7 ? "需要确认对应的简历字段" : "已匹配，可自动填写"}</small>
-    </span>
-    {field.key !== "photo" && field.key !== "attachment" && !isSensitiveFieldLabel(field.label) && field.confidence < 0.7 ? <select className="field-confirm-select" aria-label={`确认${field.label || "字段"}`} value={field.key ?? ""} onChange={(event) => void confirmField(field, (event.target.value || null) as FieldKey | null)}>
-      <option value="">选择对应字段</option>
-      {fieldOptions.map(([key, label]) => <option value={key} key={key}>{label}</option>)}
-    </select> : null}
-  </li>;
 
   return <main className="offer-star-panel">
     <header className="panel-header">
@@ -663,19 +747,30 @@ function App() {
     {authState === "signed-in" ? <section className="account-strip" aria-label="当前登录用户">
       {userProfile?.avatar && !avatarFailed ? <img className="account-avatar" src={userProfile.avatar} alt="" onError={() => setAvatarFailed(true)} /> : <span className="account-avatar account-avatar-fallback">{userInitial}</span>}
       <span className="account-copy"><strong>{userProfile?.nickname || "已登录 Offer Star"}</strong><small>账号已连接</small></span>
-      <button className="account-action" type="button" onClick={() => void openOfferStarResume()}>管理简历</button>
       <button className="account-action account-logout" type="button" onClick={() => void clearExtensionToken()}>退出</button>
     </section> : null}
 
-    <div className={`status-banner status-${phase}${securityBlocked ? " status-security" : ""}`} role="status" aria-live="polite" aria-atomic="true">{message}</div>
+    <div className="panel-tabs" role="tablist" aria-label="插件功能">
+      <button type="button" role="tab" aria-selected={panelTab === "fill"} className={panelTab === "fill" ? "tab-active" : ""} onClick={() => setPanelTab("fill")}>自动填充</button>
+      <button type="button" role="tab" aria-selected={panelTab === "preview"} className={panelTab === "preview" ? "tab-active" : ""} onClick={() => setPanelTab("preview")}>简历预览</button>
+    </div>
 
-    {siteName ? <section className="page-context-card" aria-label="当前页面信息">
-      <div className="page-context-icon"><PanelIcon name="external" /></div>
-      <div className="page-context-copy"><strong>{siteName}{siteIsGeneric ? "（通用识别）" : ""}</strong><small>{pageTitle || pageAddress || "当前申请页面"}</small></div>
-      <span className={`page-context-badge page-context-badge-${pageContextState}`}>{pageContextLabel}</span>
-    </section> : null}
+    {message ? <div className={`status-banner status-${phase}${securityBlocked ? " status-security" : ""}`} role="status" aria-live="polite" aria-atomic="true">{message}</div> : null}
 
-    <section className="resume-card" aria-busy={authState === "checking"}>
+    {panelTab === "fill" ? <section className="smart-fill">
+      <h3>智能表单填充</h3>
+      <p>识别当前页面的表单并自动填写。</p>
+      <div className="fill-hero">
+        <div className="fill-hero-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" /></svg></div>
+        <strong>自动填充此职位申请</strong>
+        <span>到目前为止，您已通过自动填充节省了 {minutesSaved} 分钟 🔥</span>
+        <button className="fill-submit" type="button" onClick={() => void (authState === "signed-in" ? autofillPage() : openOfferStarLogin())} disabled={phase === "filling" || loginPending || authState === "checking"}>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" /></svg>
+          {phase === "filling" ? "正在填写…" : authState === "signed-in" ? "自动填充此页面" : loginPending ? "正在打开…" : "微信扫码登录"}
+        </button>
+        {authState !== "signed-in" && authState !== "checking" ? <button className="fill-refresh" type="button" onClick={() => void refreshWebsiteLogin()}>我已登录</button> : null}
+      </div>
+    </section> : <section className="resume-card" aria-busy={authState === "checking"}>
       <div className="section-heading"><strong>使用哪份简历</strong></div>
       {authState === "checking" ? <div className="resume-loading" role="status" aria-label="正在加载简历"><div className="loading-copy"><strong>正在读取简历</strong><span>请稍候</span></div><span className="loading-bar" /></div> : null}
       {authState === "checking" ? null : resumes.length ? <div className="resume-picker" ref={resumePickerRef}>
@@ -687,115 +782,15 @@ function App() {
         {resumeMenuOpen ? <div className="resume-options" role="listbox" aria-label="简历列表">
           {resumes.map((item, index) => <button type="button" data-resume-option-index={index} role="option" aria-selected={item.id === selectedResumeId} className={`${item.id === selectedResumeId ? "resume-option option-active" : "resume-option"}${resumeFocusIndex === index ? " option-focused" : ""}`} key={item.id} onKeyDown={(event) => { if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setResumeFocusIndex(nextResumeIndex(index, event.key === "ArrowDown" ? "next" : "previous", resumes.length)); } else if (event.key === "Escape") { event.preventDefault(); setResumeMenuOpen(false); } }} onClick={() => void loadResumeProfile(item.id)}><span className="resume-avatar small">{item.title.slice(0, 1)}</span><span>{item.title}</span>{item.id === selectedResumeId ? <span className="option-check">✓</span> : null}</button>)}
         </div> : null}
-      </div> : <>
+      </div> : authState === "signed-in" ? <div className="resume-empty-state">还没有可用简历，请先创建一份简历</div> : <>
         <div className="resume-empty-state">请先登录并创建简历</div>
         <div className="login-actions">
           <button className="button-primary" disabled={loginPending} onClick={() => void openOfferStarLogin()}>{loginPending ? "正在打开…" : "微信扫码登录"}</button>
           <button onClick={() => void refreshWebsiteLogin()}>我已登录</button>
         </div>
       </>}
-    </section>
-
-    <section className={`action-card${fields.length ? " action-card-scanned" : ""}`}>
-      {fields.length ? <div className="field-summary" aria-label="字段识别统计">
-        <div><strong>{matched.length}</strong><span>项可自动填写</span></div>
-        <p>{pending.length ? `${pending.length} 项需要确认` : `共识别 ${fields.length} 项，全部已匹配`}</p>
-      </div> : <div className="action-intro"><strong>填写当前申请表</strong><span>扫描后只会填写，不会自动提交。</span></div>}
-      <div className="primary-actions">
-        <button className={fields.length ? "button-secondary" : "button-primary"} onClick={scanPage} disabled={phase === "scanning" || phase === "filling"}>
-          {phase === "scanning" ? "正在扫描…" : fields.length ? "重新扫描" : "扫描当前页面"}
-        </button>
-        {fields.length ? <button className="button-primary" onClick={() => canQuickFill(fields, pageStale) ? void fill() : setPhase("confirm")} disabled={pageStale || !resume || phase === "scanning" || phase === "filling" || phase === "done"}>
-          {canQuickFill(fields, pageStale) ? "一键填写" : "查看匹配结果"}
-        </button> : null}
-      </div>
-    </section>
-
-    {siteName && !fields.length && !securityBlocked && phase !== "scanning" ? <section className="empty-scan-card" aria-live="polite">
-      <div className="empty-scan-copy"><strong>没有找到可填写字段</strong><span>请先展开申请表，再重新扫描。</span></div>
-      <button type="button" onClick={() => void scanPage()}>重新扫描</button>
-    </section> : null}
-
-    {phase === "confirm" && <section className="review-card">
-      <div className="review-heading"><strong>确认填写 {matched.length} 项</strong><button className="review-back-button" onClick={() => setPhase("review")}>返回</button></div>
-      <div className="fill-mode-control" role="group" aria-label="选择填写方式">
-        <div className="segmented-control">
-          <button type="button" aria-pressed={fillMode === "incremental"} className={fillMode === "incremental" ? "segment-active" : ""} onClick={() => changeFillMode("incremental")}>保留已有内容</button>
-          <button type="button" aria-pressed={fillMode === "overwrite"} className={fillMode === "overwrite" ? "segment-active" : ""} onClick={() => changeFillMode("overwrite")}>覆盖已有内容</button>
-        </div>
-      </div>
-      <div className="fill-preview-list">
-        {fillPreview.map((item) => <div className="fill-preview-row" key={item.fieldId}><strong>{item.label}</strong><span>{item.value}</span></div>)}
-        {!fillPreview.length ? <span className="empty-copy">暂无可自动填写的内容</span> : null}
-      </div>
-      <button className="button-primary review-confirm-button" onClick={fill}>确认填写</button>
-    </section>}
-
-    {!!fields.length && <>
-      {pageStale ? <p className="page-stale-banner">页面表单刚刚更新，请重新扫描后继续。</p> : null}
-      {pending.length ? <section className="attention-section">
-        <div className="compact-heading"><strong>需要你确认</strong><span>{pending.length} 项</span></div>
-        <ul className="field-list">{pending.map(renderFieldRow)}</ul>
-      </section> : <div className="all-matched-note">所有字段都已匹配，可以直接填写。</div>}
-
-      {fields.some((field) => field.key === "photo" || field.key === "attachment") ? <section className="attachment-section">
-        <div
-          className={`upload-dropzone${draggingFiles ? " upload-dropzone-active" : ""}`}
-          role="button"
-          tabIndex={0}
-          aria-label="选择照片或附件"
-          onClick={() => fileInputRef.current?.click()}
-          onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); fileInputRef.current?.click(); } }}
-          onDragEnter={(event) => { event.preventDefault(); setDraggingFiles(true); }}
-          onDragOver={(event) => event.preventDefault()}
-          onDragLeave={(event) => { if (event.currentTarget === event.target) setDraggingFiles(false); }}
-          onDrop={(event) => { event.preventDefault(); setDraggingFiles(false); void choosePhoto(event.dataTransfer.files); }}
-        >
-          <input ref={fileInputRef} className="file-input-hidden" aria-label="选择照片或附件文件" type="file" multiple accept="image/*,.pdf,.doc,.docx,application/pdf" onChange={(event) => void choosePhoto(event.target.files ?? undefined)} />
-          <span className="upload-dropzone-icon"><PanelIcon name="upload" /></span>
-          <span className="upload-dropzone-copy"><strong>{draggingFiles ? "松开即可添加附件" : "点击或拖拽上传照片 / 附件"}</strong><small>支持 JPG、PNG、PDF、DOC、DOCX，单个不超过 6MB</small></span>
-          <span className="upload-dropzone-arrow">›</span>
-        </div>
-        {photoData.length ? <div className="attachment-preview">
-          <div className="attachment-heading"><strong>待确认文件</strong><span>{photoData.length} 个</span></div>
-          <ul className="attachment-list">{photoData.map((file, index) => { const meta = describeAttachment(file); return <li key={`${file.fileName}-${file.mimeType}-${index}`}><span className="attachment-icon">{meta.icon}</span><span className="attachment-copy"><strong>{file.fileName}</strong><small>{meta.kind}</small></span><button type="button" aria-label={`移除${file.fileName}`} onClick={() => removeSelectedAttachment(index)}>×</button></li>; })}</ul>
-          <button onClick={() => { photoDataRef.current = []; setPhotoData([]); setMessage("已清空待确认附件"); }}>清空全部</button>
-        </div> : null}
-        <button className="attachment-confirm-button" onClick={confirmPhoto} disabled={!photoData.length}>确认填入附件</button>
-      </section> : null}
-
-      {matched.length ? <details className="matched-details">
-        <summary>查看已匹配的 {matched.length} 项</summary>
-        <ul className="field-list field-list-matched">{matched.map(renderFieldRow)}</ul>
-      </details> : null}
-
-      <details className="advanced-tools">
-        <summary><span><strong>智能辅助</strong><small>可选，用于难识别字段和内容草稿</small></span><span>展开</span></summary>
-        <div className="advanced-tools-body">
-          <label className="job-description-field">
-            职位描述
-            <textarea value={jobDescription} onChange={(event) => setJobDescription(event.target.value)} rows={3} placeholder="可选，粘贴后可辅助生成内容" />
-          </label>
-          <button className={`ai-button${aiPending ? " ai-button-pending" : ""}`} onClick={() => void analyzeWithAi()} disabled={phase === "filling" || aiPending}><PanelIcon name="sparkle" /> {aiPending ? "AI 分析中…" : "AI 分析未识别字段"}</button>
-          {aiResult ? <div className="ai-result-summary" role="status"><div><strong>分析完成</strong><span>{aiResult.mappings.length} 个映射，{aiResult.drafts.length} 个草稿</span></div></div> : null}
-          {aiResult?.mappings.length ? <details className="ai-mapping-details"><summary>查看并修正字段映射</summary><div className="ai-mapping-list">{aiResult.mappings.map((mapping) => { const field = fields.find((item) => item.id === mapping.fieldId); const level = aiConfidenceLevel(mapping.confidence); return <div className={`ai-mapping-row confidence-${level}`} key={mapping.fieldId}><div className="mapping-copy"><strong>{field?.label || mapping.fieldId}</strong><span>AI 建议</span></div>{field ? <select className="ai-mapping-select" aria-label={`修正${field.label || "字段"}映射`} value={field.key ?? ""} onChange={(event) => void confirmField(field, (event.target.value || null) as FieldKey | null)}><option value="">未匹配</option>{fieldOptions.map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select> : <span className="mapping-unmatched">字段已变化</span>}<span className="confidence-badge">{formatAiConfidence(mapping.confidence)}</span></div>; })}</div></details> : null}
-          {aiResult?.drafts.length ? <section className="draft-card">
-            <strong>AI 草稿</strong>
-            {aiResult.drafts.map((draft) => <label className="draft-field" key={draft.fieldKey}><span>{draft.fieldKey}</span>
-              <textarea value={draftOverrides[draft.fieldKey] ?? ""} onChange={(event) => setDraftOverrides((current) => ({ ...current, [draft.fieldKey]: event.target.value }))} rows={3} />
-              <span className="draft-actions"><button onClick={() => void analyzeWithAi(`只重新生成 ${draft.fieldKey} 草稿，保留其他字段不变`, draft.fieldKey)}>重新生成</button>
-              <button onClick={() => { setAiResult((current) => current ? rejectDraft(current, draft.fieldKey) : current); setDraftOverrides((current) => { const next = { ...current }; delete next[draft.fieldKey]; return next; }); }}>删除</button></span>
-            </label>)}
-          </section> : null}
-          <details className="diagnostic-details"><summary>开发诊断</summary><p className="metric-note">{formatSiteMetric(siteMetric)}</p></details>
-        </div>
-      </details>
-    </>}
-
-    {phase === "done" && <section className={failureReport ? "result-card result-warning" : "result-card result-success"}>
-      <div className="result-heading"><span className="result-icon">{failureReport ? "!" : "✓"}</span><div><strong>{failureReport ? "填写部分完成" : "填写已完成"}</strong><span>{failureReport ? "请处理未填写字段后再提交" : "请检查页面内容，再手动提交"}</span></div></div>
-      {failureReport ? <div className="failure-summary"><strong>{failureReport.failedFields.length} 个字段未填写</strong><span>失败原因已脱敏，可复制给开发人员排查</span><ul>{failureReport.failedFields.map((field) => <li key={field}><span>{field}</span><small>{failureReport.reasons[field] ?? "未匹配到页面控件"}</small></li>)}</ul><button className="diagnostic-button" onClick={() => void copyFailureReport()}>复制诊断报告</button></div> : null}
-      <div className="result-actions"><button onClick={undo}>撤销本次填写</button><button className="button-primary" onClick={advanceStep}>填写下一步</button></div>
+      {resume ? <ResumePreview resume={resume} /> : selectedResumeId && authState === "signed-in" ? <ResumePreviewSkeleton /> : null}
+      {authState === "signed-in" ? <button className="button-primary preview-manage" type="button" onClick={() => void openOfferStarResume()}>管理简历</button> : null}
     </section>}
   </main>;
 }

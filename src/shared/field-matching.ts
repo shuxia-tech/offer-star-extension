@@ -1,6 +1,13 @@
 import type { FieldKey } from "./messages";
 
 const fieldPattern: Array<[FieldKey, RegExp]> = [
+  ["hasInternship", /是否有实习经验|是否有工作经验|是否有工作经历/],
+  ["hasActivity", /是否有校内外实践|是否有实践活动|是否有项目经历/],
+  ["hasAward", /是否有获奖/],
+  ["highestMajorCategory", /最高学历专业类别/],
+  ["majorCategory", /专业类别/],
+  ["educationStartDate", /入学日期|入学时间/],
+  ["educationEndDate", /毕业日期|毕业时间/],
   ["projectName", /项目名称|项目名|project.?name/i],
   ["name", /姓名|真实姓名|given.?name|family.?name|name|full.?name/i],
   ["phone", /手机|电话|手机号|phone|mobile|tel|telephone/i],
@@ -16,7 +23,7 @@ const fieldPattern: Array<[FieldKey, RegExp]> = [
   ["website", /个人网站|个人主页|website|homepage/i],
   ["targetPosition", /应聘职位|求职岗位|目标职位|期望职位|期望岗位|职位名称|job.?title/i],
   ["school", /学校|院校|毕业院校|school|university|college/i],
-  ["major", /专业|所学专业|major|discipline/i],
+  ["major", /专业名称|所学专业|major|discipline/i],
   ["degree", /学历|学位|degree|education/i],
   ["company", /公司|工作单位|company|employer|organization(?!.?title)/i],
   ["position", /职位|岗位|职务|position|title|organization.?title/i],
@@ -36,7 +43,12 @@ const sensitiveFieldPattern = /身份证|证件号码|护照|银行卡|银行账
 
 export function guessFieldKey(label: string): { key: FieldKey | null; confidence: number } {
   const match = fieldPattern.find(([, pattern]) => pattern.test(label));
-  return match ? { key: match[0], confidence: 0.86 } : { key: null, confidence: 0 };
+  if (!match) return { key: null, confidence: 0 };
+  // “是否服从岗位调剂”这类问答会误撞到“岗位”，只有明确的经历开关才自动对应。
+  if (/^是否/.test(label.trim()) && match[0] !== "hasInternship" && match[0] !== "hasActivity" && match[0] !== "hasAward") {
+    return { key: null, confidence: 0 };
+  }
+  return { key: match[0], confidence: 0.86 };
 }
 
 /** 涉及身份、财务、人口统计或健康的信息默认禁止自动填写。 */

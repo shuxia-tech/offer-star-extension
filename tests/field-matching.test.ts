@@ -33,6 +33,24 @@ describe("简历字段识别", () => {
     expect(guessFieldKey(label).key).toBe(key);
   });
 
+  it("识别申请表里的教育和经历开关，不猜测调剂与渠道", () => {
+    expect(guessFieldKey("入学日期").key).toBe("educationStartDate");
+    expect(guessFieldKey("毕业日期").key).toBe("educationEndDate");
+    expect(guessFieldKey("专业名称").key).toBe("major");
+    expect(guessFieldKey("专业类别").key).toBe("majorCategory");
+    expect(guessFieldKey("最高学历专业类别").key).toBe("highestMajorCategory");
+    expect(guessFieldKey("专业技能").key).toBe("skills");
+    expect(guessFieldKey("意向城市").key).toBe("targetCity");
+    expect(guessFieldKey("是否有实习经验").key).toBe("hasInternship");
+    expect(guessFieldKey("是否有校内外实践活动经历").key).toBe("hasActivity");
+    expect(guessFieldKey("是否有获奖经验").key).toBe("hasAward");
+    expect(guessFieldKey("是否服从岗位调剂").key).toBeNull();
+    expect(guessFieldKey("毕业前最早可实习时间").key).toBeNull();
+    expect(guessFieldKey("你是从哪个渠道获取招聘信息的").key).toBeNull();
+    expect(guessFieldKey("每周可出勤天数（要求3天及以上）").key).toBeNull();
+    expect(guessFieldKey("英语等级").key).toBeNull();
+  });
+
   it("项目描述优先于通用工作描述", () => {
     expect(guessFieldKey("projectDescription").key).toBe("projectDescription");
     expect(guessFieldKey("项目描述").key).toBe("projectDescription");

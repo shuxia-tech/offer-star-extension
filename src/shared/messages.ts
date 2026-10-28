@@ -14,7 +14,14 @@ export type FieldKey =
   | "targetPosition"
   | "school"
   | "major"
+  | "majorCategory"
+  | "highestMajorCategory"
   | "degree"
+  | "educationStartDate"
+  | "educationEndDate"
+  | "hasInternship"
+  | "hasActivity"
+  | "hasAward"
   | "company"
   | "position"
   | "startDate"
@@ -58,12 +65,26 @@ export type ResumeProfile = {
     wechat?: string;
     website?: string;
     github?: string;
+    gitee?: string;
     targetPosition?: string;
+    height?: string;
+    weight?: string;
+    nation?: string;
+    nativePlace?: string;
+    politicalOutlook?: string;
+    maritalStatus?: string;
   };
-  education: Array<{ school: string; major?: string; degree?: string }>;
-  workExperience: Array<{ company: string; position?: string; description?: string; startTime?: string; endTime?: string }>;
+  education: Array<{ school: string; major?: string; degree?: string; startTime?: string; endTime?: string; description?: string }>;
+  awards?: string[];
+  honors?: Array<{ name: string; time?: string; level?: string; issuer?: string; description?: string }>;
+  campusExperience?: Array<{ name: string; role?: string; section?: string; address?: string; description?: string; startTime?: string; endTime?: string }>;
+  researchExperience?: Array<{ name: string; role?: string; section?: string; address?: string; description?: string; startTime?: string; endTime?: string }>;
+  portfolio?: Array<{ name: string; url?: string; description?: string }>;
+  otherExperience?: Array<{ name: string; role?: string; section?: string; address?: string; description?: string; startTime?: string; endTime?: string }>;
+  workExperience: Array<{ company: string; position?: string; city?: string; description?: string; startTime?: string; endTime?: string }>;
   projectExperience?: Array<{ name: string; role?: string; description?: string; startTime?: string; endTime?: string }>;
   skills: string[];
+  skillsText?: string;
   selfIntroduction?: string;
 };
 
@@ -84,18 +105,22 @@ export type AiAnalysisResult = {
   drafts: Array<{ fieldKey: FieldKey; content: string; reason: string }>;
 };
 
-export type ExtensionMessage =
-  | { type: "OPEN_FLOATING_PANEL" }
-  | { type: "OPEN_OFFER_STAR_LOGIN" }
-  | { type: "OPEN_OFFER_STAR_RESUME" }
-  | { type: "GET_CURRENT_TAB_ID" }
+export type PageCommand =
   | { type: "SCAN_PAGE" }
   | { type: "FILL_FIELDS"; values: Record<string, FieldValue>; mode: "incremental" | "overwrite" }
   | { type: "UNDO_FILL" }
   | { type: "ADVANCE_FORM_STEP" }
   | { type: "FILL_PHOTO"; dataUrl: string; fileName: string; mimeType: string }
   | { type: "FILL_FILES"; files: FilePayload[] }
-  | { type: "GET_PAGE_CONTEXT" }
+  | { type: "GET_PAGE_CONTEXT" };
+
+export type ExtensionMessage =
+  | { type: "OPEN_FLOATING_PANEL" }
+  | { type: "OPEN_OFFER_STAR_LOGIN" }
+  | { type: "OPEN_OFFER_STAR_RESUME" }
+  | { type: "GET_CURRENT_TAB_ID" }
+  | PageCommand
+  | { type: "RELAY_PAGE_MESSAGE"; tabId: number; message: PageCommand }
   | { type: "PAGE_CONTEXT_CHANGED"; url: string; reason: string; tabId?: number }
   | { type: "PAGE_FORM_CHANGED"; url: string; tabId?: number }
   | { type: "SYNC_OFFER_STAR_TOKEN"; token: string | null; closeLoginWindow?: boolean }
