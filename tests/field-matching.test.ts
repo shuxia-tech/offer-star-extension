@@ -36,6 +36,7 @@ describe("简历字段识别", () => {
   it("识别申请表里的教育和经历开关，不猜测调剂与渠道", () => {
     expect(guessFieldKey("入学日期").key).toBe("educationStartDate");
     expect(guessFieldKey("毕业日期").key).toBe("educationEndDate");
+    expect(guessFieldKey("学校名称").key).toBe("school");
     expect(guessFieldKey("专业名称").key).toBe("major");
     expect(guessFieldKey("专业类别").key).toBe("majorCategory");
     expect(guessFieldKey("最高学历专业类别").key).toBe("highestMajorCategory");

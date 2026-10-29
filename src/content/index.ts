@@ -15,6 +15,15 @@ import { withRequestTimeout } from "../shared/request-timeout";
 
 let engine = createDomEngine(document, location.href);
 let hasScanned = false;
+let pageTabId: number | undefined;
+void browser.runtime.sendMessage({ type: "GET_CURRENT_TAB_ID" }).then((result: { tabId?: number | null }) => {
+  if (Number.isInteger(result?.tabId) && (result.tabId as number) > 0) pageTabId = result.tabId as number;
+}).catch(() => undefined);
+
+function notifyPanel(message: { type: "PAGE_FORM_CHANGED"; url: string } | { type: "PAGE_CONTEXT_CHANGED"; url: string; reason: string }) {
+  // 直接发给悬浮面板。不要再经后台回发，否则内容脚本会一直等这条回发，扫描请求进不来。
+  void browser.runtime.sendMessage({ ...message, tabId: pageTabId }).catch(() => undefined);
+}
 const formNoticeGate = createFormNoticeGate(
   (callback, milliseconds) => window.setTimeout(callback, milliseconds),
   (id) => window.clearTimeout(id as number)
@@ -27,13 +36,13 @@ installNavigationObserver(window, ({ url, reason }) => {
   setFloatingLauncherVisible(document, true);
   if (!shouldReportPageChange(url)) return;
   console.info("[Offer Star][Content] 检测到页面导航，已使旧字段映射失效", { 地址: sanitizePageUrl(url), 原因: reason });
-  void browser.runtime.sendMessage({ type: "PAGE_CONTEXT_CHANGED", url, reason });
+  notifyPanel({ type: "PAGE_CONTEXT_CHANGED", url, reason });
 });
 
 installFormMutationObserver(document, () => {
   if (!hasScanned || formNoticeGate.isHeld() || !shouldReportPageChange(location.href)) return;
   console.info("[Offer Star][Content] 检测到表单结构异步更新，提示重新扫描", { 地址: sanitizePageUrl(location.href) });
-  void browser.runtime.sendMessage({ type: "PAGE_FORM_CHANGED", url: location.href });
+  notifyPanel({ type: "PAGE_FORM_CHANGED", url: location.href });
 }, () => formNoticeGate.isHeld());
 
 // 在网页右下角提供轻量入口，用户不需要反复打开浏览器工具栏。
@@ -75,6 +84,7 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendR
       return false;
     }
     formNoticeGate.engage();
+    console.info("[Offer Star][Content] 开始扫描当前页面");
     void engine.scanDeep().then((fields) => {
       hasScanned = true;
       formNoticeGate.releaseAfter(AUTOFILL_FORM_NOTICE_SETTLE_MS);

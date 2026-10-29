@@ -5,7 +5,6 @@ import { requestAiGateway } from "../shared/ai-request";
 import { RESUME_SESSION_STORAGE_KEYS } from "../shared/auth-session";
 import { requestResumeApi, ResumeSessionExpiredError } from "../shared/resume-request";
 import { clearResumeCacheKeys, isResumeCacheFresh, profileCacheKey, RESUME_LIST_CACHE_KEY, type CachedResumeList, type CachedResumeProfile } from "../shared/resume-cache";
-import { shouldForwardPageChange } from "../shared/page-change-routing";
 import { pageRelayRequest } from "../shared/page-relay";
 import { buildResumeManageUrl } from "../shared/resume-manage-url";
 import { buildAiRequestBody, sanitizePageUrl } from "../shared/privacy";
@@ -160,19 +159,14 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRe
   const runtimeWithUrl = browser.runtime as typeof browser.runtime & { getURL: (path: string) => string };
   const relay = pageRelayRequest(message, Boolean(sender.url?.startsWith(runtimeWithUrl.getURL(""))));
   if (relay) {
+    console.info("[Offer Star][Background] 正在把页面操作发给申请页", { 类型: relay.message.type, 标签页: relay.tabId });
     browser.tabs.sendMessage(relay.tabId, relay.message).then(sendResponse).catch(() => {
       sendResponse({ relayError: "无法连接当前页面，请刷新后重试" });
     });
     return true;
   }
-  // 只有内容脚本带有 tab 身份时才允许转发，避免后台 runtime.sendMessage 的回传再次进入本分支。
-  if ((message.type === "PAGE_CONTEXT_CHANGED" || message.type === "PAGE_FORM_CHANGED") && shouldForwardPageChange(sender.tab?.id, message.url)) {
-    console.info("[Offer Star][Background] 转发表单页面状态变化", { 类型: message.type, 地址: sanitizePageUrl(message.url) });
-    void browser.runtime.sendMessage({ ...message, tabId: sender.tab?.id }).catch((error) => {
-      console.warn("[Offer Star][Background] 悬浮面板尚未打开，页面状态消息未送达", error);
-    });
-    return false;
-  }
+  // 页面变化由内容脚本直接通知悬浮面板。后台再回发会和扫描互相等待，内容脚本就进不了 scan()。
+  if (message.type === "PAGE_CONTEXT_CHANGED" || message.type === "PAGE_FORM_CHANGED") return false;
   if (message.type === "SCAN_PAGE" && sender.tab?.id) {
     browser.tabs.sendMessage(sender.tab.id, message).then(sendResponse).catch(() => sendResponse({ fields: [] }));
     return true;

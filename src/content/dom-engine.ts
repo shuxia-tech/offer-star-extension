@@ -1,5 +1,6 @@
 import type { DetectedField, FieldValue, FilePayload } from "../shared/messages";
-import { guessFieldKey, shouldFillExistingValue } from "../shared/field-matching";
+import { guessFieldKey, isBlockedActionLabel, isConsentLabel, isPhoneFieldLabel, sectionAddKeys, shouldFillExistingValue } from "../shared/field-matching";
+import { blockedActionTerms, sectionAddRules } from "../shared/field-catalog";
 import { createFillHistory } from "../shared/fill-history";
 import { getSiteAdapter } from "../shared/site-adapters";
 import { validateFieldValue } from "../shared/field-value-validation";
@@ -18,6 +19,32 @@ export type DomEngine = {
 /** 页面 DOM 填写引擎。消息路由只负责浏览器通信，所有字段操作都在这里集中实现并可独立测试。 */
 export function createDomEngine(document: Document, pageUrl: string): DomEngine {
   const fillHistory = createFillHistory<HTMLElement>();
+  let highlighted: { element: HTMLElement; boxShadow: string; transition: string } | undefined;
+
+  function clearFillHighlight() {
+    if (!highlighted) return;
+    highlighted.element.style.boxShadow = highlighted.boxShadow;
+    highlighted.element.style.transition = highlighted.transition;
+    highlighted = undefined;
+  }
+
+  /** 先聚到当前字段所在行，再在 300ms 内滚到可视区域，然后才写入。 */
+  async function revealFillTarget(element: HTMLElement) {
+    clearFillHighlight();
+    const group = element.closest(".field-group");
+    const region = group instanceof HTMLElement ? group : element;
+    const view = ownerWindow(region);
+    const reduceMotion = view.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    highlighted = { element: region, boxShadow: region.style.boxShadow, transition: region.style.transition };
+    region.style.transition = reduceMotion ? "" : "box-shadow 300ms ease";
+    region.style.boxShadow = "0 0 0 3px rgba(22, 119, 255, 0.45)";
+    try {
+      region.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center", inline: "nearest" });
+    } catch { /* 测试环境可能没有滚动实现 */ }
+    try { element.focus({ preventScroll: true }); } catch { element.focus(); }
+    const jsdom = /jsdom/i.test(view.navigator?.userAgent ?? "");
+    if (!reduceMotion && !jsdom) await new Promise<void>((resolve) => setTimeout(resolve, 300));
+  }
 
   /** 查询主文档、开放式 Shadow DOM 和同源 iframe；跨域 iframe 由浏览器安全策略自然隔离。 */
   function queryAllDeep<T extends HTMLElement>(selector: string, root: Document | ShadowRoot = document, depth = 0): T[] {
@@ -77,7 +104,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
   function isPhoneCountryControl(element: HTMLElement) {
     if (element.tagName === "INPUT" || element.tagName === "TEXTAREA" || element.tagName === "SELECT") return false;
     const selectable = element.getAttribute("role") === "combobox" || element.getAttribute("aria-haspopup") === "listbox" || Boolean(element.closest(".ant-select"));
-    return selectable && /手机|电话/.test(explicitFieldLabel(element));
+    return selectable && isPhoneFieldLabel(explicitFieldLabel(element));
   }
 
   function isNoiseControl(element: HTMLElement) {
@@ -123,7 +150,33 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
   }
 
   function controls() {
+    const form = document.querySelector("#candidateForm");
+    if (form) return tupuControls(form);
     return queryAllDeep<HTMLElement>("input:not([type=hidden]), textarea, select, [contenteditable=true], [role=combobox], [role=checkbox], [role=radio], [aria-haspopup=listbox]").filter((element) => !isNoiseControl(element));
+  }
+
+  /** 图普申请表一行一个字段：用 .field-label 定位，电话取号码框，城市和下拉取选择器。 */
+  function tupuControls(form: Element) {
+    return Array.from(form.querySelectorAll<HTMLElement>(".field-group")).flatMap((group) => {
+      if (isCollapsedGroup(group) || isEffectivelyHidden(group)) return [];
+      const control = tupuPrimaryControl(group);
+      return control && !isNoiseControl(control) ? [control] : [];
+    });
+  }
+
+  function tupuPrimaryControl(group: HTMLElement) {
+    const label = cleanLabel(group.querySelector(".field-label")?.textContent ?? "");
+    if (isPhoneFieldLabel(label)) {
+      const phone = group.querySelector<HTMLInputElement>("input:not([type=hidden]):not([type=radio]):not([type=checkbox]):not([disabled])");
+      if (phone) return phone;
+    }
+    const cascader = group.querySelector<HTMLElement>(".ant-cascader-picker");
+    if (cascader) return cascader;
+    const combo = group.querySelector<HTMLElement>("[role=combobox], [aria-haspopup=listbox]");
+    if (combo && !isPhoneCountryControl(combo)) return combo;
+    const radio = group.querySelector<HTMLInputElement>("input[type=radio]");
+    if (radio) return radio;
+    return group.querySelector<HTMLElement>("textarea, input.ant-calendar-picker-input, input.ant-input:not([disabled]):not([type=hidden]), input:not([disabled]):not([type=hidden]):not([type=radio]):not([type=checkbox])");
   }
 
   function scan() {
@@ -188,7 +241,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
         return true;
       } else {
         const labelText = input.closest("label")?.textContent ?? input.parentElement?.textContent ?? "";
-        if (/同意|协议|隐私|授权|营销/.test(labelText)) return false;
+        if (isConsentLabel(labelText)) return false;
         const shouldCheck = ["true", "1", "yes", "y", "是", "有", "同意", "已婚"].includes(value.trim().toLowerCase());
         input.checked = shouldCheck;
       }
@@ -196,7 +249,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
       const role = element.getAttribute("role");
       const labelText = element.getAttribute("aria-label") ?? element.textContent ?? element.parentElement?.textContent ?? "";
       if (role === "checkbox") {
-        if (/同意|协议|隐私|授权|营销/.test(labelText)) return false;
+        if (isConsentLabel(labelText)) return false;
         const shouldCheck = ["true", "1", "yes", "y", "是", "有", "同意", "已婚"].includes(value.trim().toLowerCase());
         const isChecked = element.getAttribute("aria-checked") === "true";
         if (isChecked !== shouldCheck) await element.click();
@@ -228,6 +281,8 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
       } else {
         select.value = matched[0].value;
       }
+    } else if (element.classList.contains("ant-cascader-picker")) {
+      return fillAntCascader(element, value);
     } else if (element.getAttribute("role") === "combobox" || element.getAttribute("aria-haspopup") === "listbox") {
       if (!value) {
         element.textContent = "";
@@ -278,19 +333,54 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
       const committed = commitVueValue(element, formatted, true);
       element.removeAttribute("data-offer-star-kind");
       if (committed) return true;
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(element, formatted);
+      pageValueSetter(element as HTMLInputElement)?.call(element, formatted);
     } else {
       const input = element as HTMLInputElement | HTMLTextAreaElement;
-      const prototype = element.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       const inputType = element.tagName === "INPUT" ? (input as HTMLInputElement).type : "";
       const normalizedValue = inputType === "date" || inputType === "month" ? normalizeDateValue(value, inputType) : normalizePhoneValue(element, value);
-      Object.getOwnPropertyDescriptor(prototype, "value")?.set?.call(input, normalizedValue);
-      if (element.classList.contains("ant-input") || element.closest(".ant-form")) commitVueValue(element, normalizedValue, true);
+      await writeFrameworkText(input, normalizedValue);
+      return true;
     }
     const EventConstructor = ownerWindow(element).Event;
     element.dispatchEvent(new EventConstructor("input", { bubbles: true }));
     element.dispatchEvent(new EventConstructor("change", { bubbles: true }));
     element.dispatchEvent(new EventConstructor("blur", { bubbles: true }));
+    return true;
+  }
+
+  function pageValueSetter(element: HTMLInputElement | HTMLTextAreaElement) {
+    const view = ownerWindow(element);
+    const prototype = element.tagName === "TEXTAREA" ? view.HTMLTextAreaElement.prototype : view.HTMLInputElement.prototype;
+    return Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+  }
+
+  /** 用页面自己的 value 赋值，再补一次 keyup，让 Vue 表单接住输入。 */
+  async function writeFrameworkText(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
+    element.focus();
+    pageValueSetter(element)?.call(element, value);
+    const view = ownerWindow(element);
+    element.dispatchEvent(new view.Event("input", { bubbles: true }));
+    element.dispatchEvent(new view.KeyboardEvent("keyup", { bubbles: true, key: "Unidentified" }));
+    if (element.classList.contains("ant-input") || element.closest(".ant-form, #candidateForm")) commitVueValue(element, value, true);
+    element.dataset.offerStarAutofillUsed = "1";
+    await new Promise<void>((resolve) => setTimeout(resolve, 40));
+  }
+
+  async function fillAntCascader(element: HTMLElement, value: string) {
+    element.click();
+    const parts = value.split(/[/／]+/).map((item) => cleanLabel(item)).filter(Boolean);
+    const steps = parts.length ? parts : [cleanLabel(value)];
+    for (const step of steps) {
+      let item: HTMLElement | undefined;
+      for (let attempt = 0; attempt < 8 && !item; attempt += 1) {
+        item = queryAllDeep<HTMLElement>(".ant-cascader-menu-item").find((option) => cleanLabel(option.textContent ?? "").includes(step) && !isEffectivelyHidden(option));
+        if (!item) await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      }
+      if (!item) return false;
+      item.click();
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    }
+    element.dataset.offerStarAutofillUsed = "1";
     return true;
   }
 
@@ -360,7 +450,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
 
   function normalizePhoneValue(element: HTMLElement, value: string) {
     const group = element.closest(".field-group");
-    if (group?.querySelector("[role=combobox], .ant-select") && /手机|电话/.test(explicitFieldLabel(element))) {
+    if (group?.querySelector("[role=combobox], .ant-select") && isPhoneFieldLabel(explicitFieldLabel(element))) {
       return value.replace(/^\+?86[-\s]?/, "");
     }
     return value;
@@ -403,33 +493,43 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     return "value" in element ? String((element as HTMLInputElement).value ?? "") : "";
   }
 
-  /** 仅为重复经历字段寻找明确的“新增”按钮，避免误触提交、删除和普通操作按钮。 */
   async function expandRepeatedSections(values: Record<string, FieldValue>) {
-      const groups: Array<{ keys: string[]; buttonPattern: RegExp }> = [
-        { keys: ["company", "position", "startDate", "endDate", "description"], buttonPattern: /(新增|添加|继续添加).*(工作|经历|任职)/i },
-        { keys: ["projectName", "projectRole", "projectStartDate", "projectEndDate", "projectDescription"], buttonPattern: /(新增|添加|继续添加).*(项目|项目经历|作品)/i },
-        { keys: ["school", "major", "degree", "majorCategory", "educationStartDate", "educationEndDate"], buttonPattern: /(新增|添加|继续添加).*(教育|学校|学历)/i }
-      ];
-    for (const group of groups) {
-      const requested = Math.max(...group.keys.map((key) => {
-        const value = values[key];
-        return Array.isArray(value) ? value.length : 0;
-      }), 0);
-      if (requested <= 1) continue;
-      let current = Math.max(...group.keys.map((key) => scan().filter((field) => field.key === key).length), 0);
-      const buttons = () => queryAllDeep<HTMLElement>("button, [role=button]").filter((button) => group.buttonPattern.test(button.textContent?.replace(/\s+/g, " ").trim() ?? ""));
+    for (const rule of sectionAddRules) {
+      const requested = Math.max(...rule.keys.map((key) => entryCount(values[key])), 0);
+      if (requested < 1) continue;
+      let current = sectionFieldCount(rule.keys);
       let attempts = 0;
       while (current < requested && attempts < requested) {
-        const button = buttons()[0];
+        const button = addSectionControls(rule.keys)[0];
         if (!button) break;
+        await revealFillTarget(button);
         await button.click();
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
-        const next = Math.max(...group.keys.map((key) => scan().filter((field) => field.key === key).length), 0);
+        const next = sectionFieldCount(rule.keys);
         if (next <= current) break;
         current = next;
         attempts += 1;
       }
     }
+  }
+
+  function entryCount(value: FieldValue | undefined) {
+    if (Array.isArray(value)) return value.filter((item) => String(item ?? "").trim()).length;
+    return String(value ?? "").trim() ? 1 : 0;
+  }
+
+  function sectionFieldCount(keys: readonly string[]) {
+    return Math.max(...keys.map((key) => scan().filter((field) => field.key === key).length), 0);
+  }
+
+  function addSectionControls(keys: readonly string[]) {
+    return queryAllDeep<HTMLElement>("button, [role=button], a, div, span").filter((element) => {
+      const text = cleanLabel(element.textContent ?? "");
+      const matched = sectionAddKeys(text);
+      if (!matched || matched.join(",") !== keys.join(",")) return false;
+      if (text.length > 20 || isBlockedActionLabel(text) || !isVisible(element)) return false;
+      return !Array.from(element.children).some((child) => sectionAddKeys(cleanLabel(child.textContent ?? ""))?.join(",") === keys.join(","));
+    });
   }
 
   function fieldAt(currentFields: DetectedField[], occurrence: number) {
@@ -466,6 +566,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
         }
         const previousValue = currentValue(element);
         if (previousValue && !shouldFillExistingValue(mode, previousValue)) continue;
+        await revealFillTarget(element);
         if (await setValue(element, valuesForKey[index])) {
           fillHistory.add({ target: element, value: previousValue });
           filled.push(key);
@@ -495,22 +596,26 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     const failed: string[] = [];
     const failureReasons: Record<string, string> = {};
     fillHistory.reset();
-    await expandRepeatedSections(values);
-    const misses = await writeFields(values, mode, filled, failed, failureReasons);
-    if (misses.length) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    try {
       await expandRepeatedSections(values);
-      for (const miss of misses) {
-        const index = failed.indexOf(miss);
-        if (index >= 0) failed.splice(index, 1);
-        delete failureReasons[miss];
+      const misses = await writeFields(values, mode, filled, failed, failureReasons);
+      if (misses.length) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        await expandRepeatedSections(values);
+        for (const miss of misses) {
+          const index = failed.indexOf(miss);
+          if (index >= 0) failed.splice(index, 1);
+          delete failureReasons[miss];
+        }
+        await writeFields(values, mode, filled, failed, failureReasons, new Set(misses));
       }
-      await writeFields(values, mode, filled, failed, failureReasons, new Set(misses));
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      await confirmEditedSegments();
+      if (failed.length) console.warn("[Offer Star][Content] 填写失败明细", { 失败数量: failed.length });
+      return { filled, failed, failureReasons };
+    } finally {
+      clearFillHighlight();
     }
-    await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    await confirmEditedSegments();
-    if (failed.length) console.warn("[Offer Star][Content] 填写失败明细", { 失败数量: failed.length });
-    return { filled, failed, failureReasons };
   }
 
   async function undo() {
@@ -525,7 +630,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
   async function advanceStep() {
     const candidates = queryAllDeep<HTMLElement>("button, [role=button], input[type=button], input[type=submit]");
     const nextPattern = /^(下一步|继续|保存并继续|继续填写|下一页|下一题|确认并继续)$/;
-    const blockedPattern = /提交|投递|发送|完成|确认申请|立即申请/;
+    const blockedPattern = new RegExp(blockedActionTerms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"));
     const target = candidates.find((button) => {
       const text = (button.textContent || (button as HTMLInputElement).value || "").replace(/\s+/g, " ").trim();
       return nextPattern.test(text) && !blockedPattern.test(text) && !(button as HTMLButtonElement).disabled && button.getAttribute("aria-disabled") !== "true" && isVisible(button);

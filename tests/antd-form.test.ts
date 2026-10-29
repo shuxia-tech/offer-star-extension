@@ -96,4 +96,64 @@ describe("Ant Design 申请表", () => {
     expect(result.filled).toContain("school");
     expect(result.filled).not.toContain("email");
   });
+
+  it("图普申请表按字段行识别，并用页面原生赋值写入", async () => {
+    document.body.innerHTML = `
+      <form id="candidateForm">
+        <div class="cardDetail">
+          <div class="field-group"><span class="field-label"><span class="require_tip">*</span>姓名</span><input class="ant-input name-input" id="value" /></div>
+          <div class="field-group"><span class="field-label"><span class="require_tip">*</span>手机号</span>
+            <div role="combobox" class="ant-select" aria-haspopup="listbox">+86</div>
+            <input class="ant-input phone-input" id="value" />
+          </div>
+          <div class="field-group"><span class="field-label"><span class="require_tip">*</span>性别</span>
+            <label><input type="radio" value="男" />男</label>
+            <label><input type="radio" value="女" />女</label>
+          </div>
+          <div class="field-group"><span class="field-label"><span class="require_tip">*</span>意向城市</span>
+            <span class="ant-cascader-picker city-picker"><input readonly class="ant-input" /></span>
+          </div>
+          <div class="ant-cascader-menus"><ul class="ant-cascader-menu"><li class="ant-cascader-menu-item">上海</li></ul></div>
+        </div>
+      </form>
+    `;
+    const name = document.querySelector<HTMLInputElement>(".name-input")!;
+    let keyups = 0;
+    name.addEventListener("keyup", () => { keyups += 1; });
+    const engine = createDomEngine(document, "https://careersite.example.com/apply");
+    expect(engine.scan().map((field) => field.key)).toEqual(["name", "phone", "gender", "targetCity"]);
+    expect(document.querySelector("[role=combobox]")?.hasAttribute("data-offer-star-field-id")).toBe(false);
+    const result = await engine.fill({ name: "测试用户", phone: "13800000000", gender: "女", targetCity: "上海" }, "overwrite");
+    expect(name.value).toBe("测试用户");
+    expect(name.dataset.offerStarAutofillUsed).toBe("1");
+    expect(keyups).toBe(1);
+    expect(document.querySelector<HTMLInputElement>(".phone-input")?.value).toBe("13800000000");
+    expect(document.querySelector<HTMLInputElement>("input[value=女]")?.checked).toBe(true);
+    expect(document.querySelector(".city-picker")?.getAttribute("data-offer-star-autofill-used")).toBe("1");
+    expect(result.filled).toEqual(expect.arrayContaining(["name", "phone", "gender", "targetCity"]));
+  });
+
+  it("教育背景和实习经历要点添加后才出现输入框", async () => {
+    document.body.innerHTML = `
+      <form id="candidateForm">
+        <section class="edu-block"><div class="add-edu">＋ 添加 教育背景</div></section>
+        <section class="intern-block"><div class="add-intern">＋ 添加 实习经历</div></section>
+        <button type="button" id="save_resume">保存去投递</button>
+      </form>
+    `;
+    let submitClicks = 0;
+    document.querySelector("#save_resume")?.addEventListener("click", () => { submitClicks += 1; });
+    document.querySelector(".add-edu")?.addEventListener("click", () => {
+      document.querySelector(".edu-block")?.insertAdjacentHTML("beforeend", `<div class="field-group"><span class="field-label">学校名称</span><input class="ant-input school-input" /></div>`);
+    });
+    document.querySelector(".add-intern")?.addEventListener("click", () => {
+      document.querySelector(".intern-block")?.insertAdjacentHTML("beforeend", `<div class="field-group"><span class="field-label">公司名称</span><input class="ant-input company-input" /></div>`);
+    });
+    const engine = createDomEngine(document, "https://careersite.example.com/apply");
+    const result = await engine.fill({ school: "示例大学", company: "示例公司" }, "overwrite");
+    expect(document.querySelector<HTMLInputElement>(".school-input")?.value).toBe("示例大学");
+    expect(document.querySelector<HTMLInputElement>(".company-input")?.value).toBe("示例公司");
+    expect(submitClicks).toBe(0);
+    expect(result.filled).toEqual(expect.arrayContaining(["school", "company"]));
+  });
 });
