@@ -41,6 +41,8 @@ describe("最终填写值合并", () => {
       skills: []
     });
     expect(values.highestMajorCategory).toBe("信息科学与技术类");
+    expect(values.highestDegree).toBe("硕士");
+    expect(values.degree).toEqual(["本科", "硕士"]);
     expect(values.majorCategory).toEqual(["商科与管理类", "信息科学与技术类"]);
     expect(values.hasInternship).toBe("是");
     expect(values.hasActivity).toBe("是");

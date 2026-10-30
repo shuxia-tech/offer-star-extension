@@ -17,6 +17,7 @@ export type FieldKey =
   | "majorCategory"
   | "highestMajorCategory"
   | "degree"
+  | "highestDegree"
   | "educationStartDate"
   | "educationEndDate"
   | "hasInternship"

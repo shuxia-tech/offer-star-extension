@@ -1,9 +1,10 @@
 import type { DetectedField, FieldValue, FilePayload } from "../shared/messages";
-import { guessFieldKey, isBlockedActionLabel, isConsentLabel, isPhoneFieldLabel, sectionAddKeys, shouldFillExistingValue } from "../shared/field-matching";
+import { guessFieldKey, isBlockedActionLabel, isConsentLabel, isPhoneFieldLabel, sectionAddKeys, sectionKeysFromTitle, shouldFillExistingValue } from "../shared/field-matching";
 import { blockedActionTerms, sectionAddRules } from "../shared/field-catalog";
 import { createFillHistory } from "../shared/fill-history";
 import { getSiteAdapter } from "../shared/site-adapters";
 import { validateFieldValue } from "../shared/field-value-validation";
+import { choiceCandidates, highestDegreeText } from "../shared/fill-values";
 import { sanitizePageUrl } from "../shared/privacy";
 
 export type ScanDebugAddButton = {
@@ -109,6 +110,8 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
   function labelFor(element: HTMLElement) {
     const explicit = explicitFieldLabel(element);
     if (explicit) return explicit;
+    const walked = ancestorFieldLabel(element);
+    if (walked) return walked;
     const input = element as HTMLInputElement;
     const root = element.getRootNode() as Document | ShadowRoot;
     const labelledBy = input.getAttribute("aria-labelledby")?.split(/\s+/).map((id) => root.getElementById?.(id)?.textContent).filter(Boolean).join(" ");
@@ -141,10 +144,31 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     return [input.name, input.id, input.placeholder, input.getAttribute("aria-label"), labelledBy, describedBy, dataLabel, legend, nearbyTitle, input.getAttribute("autocomplete"), semanticType, groupLabel, element.closest("label")?.textContent, nearbyLabel].filter(Boolean).join(" ").trim();
   }
 
+  function ancestorFieldLabel(element: HTMLElement) {
+    let current: HTMLElement | null = element;
+    for (let depth = 0; current && depth < 7; depth += 1, current = current.parentElement) {
+      const previous = current.previousElementSibling;
+      if (!(previous instanceof HTMLElement) || previous.querySelector("input, textarea, select")) continue;
+      const text = cleanLabel(previous.textContent ?? "");
+      if (text && text.length <= 20 && (guessFieldKey(text).key || /就读时间|在读时间|在校时间|起止年月|实习时间|工作时间|在职时间|任职时间/.test(text))) return (previous.textContent ?? "").trim();
+    }
+    return "";
+  }
+
+  function placeholderSelectTriggers() {
+    return queryAllDeep<HTMLElement>("div, span").filter((element) => {
+      if (cleanLabel(element.textContent ?? "") !== "请选择") return false;
+      if (element.querySelector("input, textarea, select")) return false;
+      if (Array.from(element.children).some((child) => cleanLabel(child.textContent ?? "") === "请选择")) return false;
+      return !isEffectivelyHidden(element);
+    });
+  }
   function controls() {
     const form = document.querySelector("#candidateForm");
     if (form) return tupuControls(form);
-    return queryAllDeep<HTMLElement>("input:not([type=hidden]), textarea, select, [contenteditable=true], [role=combobox], [role=checkbox], [role=radio], [aria-haspopup=listbox]").filter((element) => !isNoiseControl(element));
+    const fields = queryAllDeep<HTMLElement>("input:not([type=hidden]), textarea, select, [contenteditable=true], [role=combobox], [role=checkbox], [role=radio], [aria-haspopup=listbox]").filter((element) => !isNoiseControl(element));
+    const triggers = placeholderSelectTriggers().filter((element) => !fields.some((field) => field === element || field.contains(element) || element.contains(field)));
+    return [...fields, ...triggers];
   }
 
   /** 图普申请表一行一个字段：用 .field-label 定位，电话取号码框，城市和下拉取选择器。 */
@@ -260,11 +284,11 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
       element.dispatchEvent(new InputEventConstructor("input", { bubbles: true, inputType: "insertText", data: value }));
     } else if (element.tagName === "SELECT") {
       const select = element as HTMLSelectElement;
-      const wanted = select.multiple ? value.split(/[，,、]/).map((item) => item.trim()).filter(Boolean) : [value];
+      const wanted = select.multiple ? value.split(/[，,、]/).map((item) => item.trim()).filter(Boolean) : choiceCandidates(value);
       let matched: HTMLOptionElement[] = [];
       // 原生级联下拉的 option 可能由接口异步插入，有限等待后再判定失败。
       for (let attempt = 0; attempt < 8 && !matched.length; attempt += 1) {
-        matched = Array.from(select.options).filter((item) => wanted.some((target) => item.textContent?.trim().includes(target) || item.value === target));
+        matched = Array.from(select.options).filter((item) => wanted.some((target) => optionMatches(item.textContent ?? "", item.value, target)));
         if (!matched.length && attempt < 7) await new Promise<void>((resolve) => setTimeout(resolve, 25));
       }
       if (!matched.length) return false;
@@ -290,7 +314,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
         element.dispatchEvent(new EventConstructor("input", { bubbles: true }));
         await Promise.resolve();
       }
-      const candidates = dateCandidates(value);
+      const candidates = [...choiceCandidates(value), ...dateCandidates(value)];
       let option: HTMLElement | undefined;
       // 虚拟列表/异步请求可能稍晚插入候选项，最多等待 8 轮，避免无限等待。
       for (let attempt = 0; attempt < 8 && !option; attempt += 1) {
@@ -326,6 +350,8 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
       element.removeAttribute("data-offer-star-kind");
       if (committed) return true;
       pageValueSetter(element as HTMLInputElement)?.call(element, formatted);
+    } else if (await pickPlaceholderOption(element, value)) {
+      return true;
     } else {
       const input = element as HTMLInputElement | HTMLTextAreaElement;
       const inputType = element.tagName === "INPUT" ? (input as HTMLInputElement).type : "";
@@ -407,6 +433,60 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     return best?.option;
   }
 
+  function optionMatches(text: string, optionValue: string, target: string) {
+    const clean = cleanLabel(text);
+    const wanted = cleanLabel(target);
+    if (!wanted) return false;
+    return clean === wanted || optionValue === target || clean.includes(wanted) || (clean.length >= 2 && wanted.includes(clean));
+  }
+
+  function isPlaceholderSelect(element: HTMLElement) {
+    const placeholder = ((element as HTMLInputElement).placeholder ?? "").trim();
+    if (/请选择|请输入|^年$|^月$/.test(placeholder)) return true;
+    const text = cleanLabel(element.textContent ?? "");
+    return text === "请选择" || text === "年" || text === "月";
+  }
+
+  function selectCandidates(value: string) {
+    const found = new Set(choiceCandidates(value));
+    if (/^\d{1,2}$/.test(value.trim())) {
+      const month = String(Number(value));
+      [month, month.padStart(2, "0"), `${month}月`].forEach((item) => found.add(item));
+    }
+    return [...found];
+  }
+
+  /** 点开「请选择 / 请输入 / 年 / 月」下拉，按可见文案点中对应项。 */
+  async function pickPlaceholderOption(element: HTMLElement, value: string) {
+    if (!isPlaceholderSelect(element) && !element.closest(".el-select, .ant-select, .ivu-select, .n-select")) return false;
+    if (element.tagName === "INPUT" || element.tagName === "TEXTAREA") {
+      pageValueSetter(element as HTMLInputElement)?.call(element, value);
+      element.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    const box = element.parentElement;
+    if (box && box !== element.ownerDocument.body) activateControl(box);
+    activateControl(element);
+    const candidates = selectCandidates(value);
+    let option: HTMLElement | undefined;
+    for (let attempt = 0; attempt < 8 && !option; attempt += 1) {
+      option = pickExactOption(queryAllDeep<HTMLElement>("li, [role=option], .el-select-dropdown__item, .ant-select-dropdown-menu-item, .ivu-select-item"), candidates);
+      if (!option) await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    }
+    if (!option) return false;
+    activateControl(option);
+    element.dataset.offerStarAutofillUsed = "1";
+    return true;
+  }
+
+  function pickExactOption(pool: HTMLElement[], candidates: string[]) {
+    const matches = pool.filter((item) => {
+      if (!isVisible(item)) return false;
+      if (optionScore(item.textContent ?? "", item.getAttribute("data-value") ?? "", candidates) < 3) return false;
+      return !Array.from(item.children).some((child) => child instanceof HTMLElement && optionScore(child.textContent ?? "", "", candidates) >= 3);
+    });
+    return matches[0];
+  }
+
   function commitVueValue(element: HTMLElement, value: unknown, askPage = false) {
     try {
       let current: HTMLElement | null = element;
@@ -485,6 +565,53 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     return "value" in element ? String((element as HTMLInputElement).value ?? "") : "";
   }
 
+  async function fillSplitYearMonth(values: Record<string, FieldValue>) {
+    const grouped = new Map<string, HTMLElement[]>();
+    for (const element of controls()) {
+      const kind = splitDateKind(labelFor(element));
+      const part = ((element as HTMLInputElement).placeholder || element.textContent || "").trim();
+      if (!kind || (part !== "年" && part !== "月")) continue;
+      const list = grouped.get(kind) ?? [];
+      list.push(element);
+      grouped.set(kind, list);
+    }
+    for (const [kind, elements] of grouped) {
+      const startKey = kind === "education" ? "educationStartDate" : "startDate";
+      const endKey = kind === "education" ? "educationEndDate" : "endDate";
+      const width = elements.length % 4 === 0 ? 4 : 2;
+      for (let index = 0; index < elements.length; index += width) {
+        const row = Math.floor(index / width);
+        const start = dateParts(valueAt(values[startKey], row));
+        const end = width === 4 ? dateParts(valueAt(values[endKey], row)) : null;
+        if (start) {
+          await pickPlaceholderOption(elements[index], start.year);
+          if (elements[index + 1]) await pickPlaceholderOption(elements[index + 1], start.month);
+        }
+        if (end) {
+          await pickPlaceholderOption(elements[index + 2], end.year);
+          if (elements[index + 3]) await pickPlaceholderOption(elements[index + 3], end.month);
+        }
+      }
+    }
+  }
+
+  function splitDateKind(label: string) {
+    if (/就读时间|在读时间|在校时间|起止年月/.test(label)) return "education";
+    if (/实习时间|工作时间|在职时间|任职时间/.test(label)) return "work";
+    return "";
+  }
+
+  function valueAt(value: FieldValue | undefined, index: number) {
+    if (Array.isArray(value)) return String(value[index] ?? "");
+    return index === 0 ? String(value ?? "") : "";
+  }
+
+  function dateParts(value: string) {
+    const match = value.trim().match(/(\d{4})\D+(\d{1,2})/);
+    if (!match) return null;
+    return { year: match[1], month: String(Number(match[2])) };
+  }
+
   async function expandRepeatedSections(values: Record<string, FieldValue>, clickedAdds: string[]) {
     for (const rule of sectionAddRules) {
       const requested = Math.max(...rule.keys.map((key) => entryCount(values[key])), 0);
@@ -524,13 +651,29 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
   }
 
   function addSectionControls(keys: readonly string[]) {
-    return queryAllDeep<HTMLElement>("button, [role=button], a, div, span").filter((element) => {
+    return queryAllDeep<HTMLElement>("button, [role=button], a").filter((element) => {
+      if (element.closest("button") && element.tagName !== "BUTTON") return false;
       const text = cleanLabel(element.textContent ?? "");
-      const matched = sectionAddKeys(text);
-      if (!matched || matched.join(",") !== keys.join(",")) return false;
       if (text.length > 24 || isBlockedActionLabel(text) || !isVisible(element)) return false;
-      return !Array.from(element.children).some((child) => sectionAddKeys(cleanLabel(child.textContent ?? ""))?.join(",") === keys.join(","));
+      const matched = sectionAddKeys(text) ?? bareAddKeys(element);
+      return Boolean(matched) && matched!.join(",") === keys.join(",");
     }).sort((left, right) => Number(right.classList.contains("add_btn")) - Number(left.classList.contains("add_btn")));
+  }
+
+  function bareAddKeys(element: HTMLElement) {
+    const text = normalizeAddText(element.textContent ?? "");
+    if (!/^(\+|＋)?(添加|新增|继续添加)$/.test(text)) return null;
+    let current: HTMLElement | null = element;
+    for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
+      const previous = current.previousElementSibling;
+      const keys = previous ? sectionKeysFromTitle(previous.textContent ?? "") : null;
+      if (keys) return keys;
+    }
+    return null;
+  }
+
+  function normalizeAddText(label: string) {
+    return label.replace(/[\s*＊]/g, "");
   }
 
   /** 文案本身往往没有点击逻辑，真正的按钮或点击事件在它的祖先上。 */
@@ -612,11 +755,15 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     for (const [key, nextValue] of Object.entries(values)) {
       if (key === "photo" || key === "attachment") continue;
       const valuesForKey = Array.isArray(nextValue) ? nextValue : [nextValue];
-      for (let index = 0; index < valuesForKey.length; index += 1) {
-        const failedKey = Array.isArray(nextValue) ? `${key}[${index + 1}]` : key;
+      const degreeCount = key === "degree" ? scan().filter((item) => item.key === "degree").length : 0;
+      const entries = key === "degree" && degreeCount <= 1
+        ? [highestDegreeText(valuesForKey.map((item) => String(item ?? ""))) || String(valuesForKey[0] ?? "")]
+        : valuesForKey;
+      for (let index = 0; index < entries.length; index += 1) {
+        const failedKey = Array.isArray(nextValue) && entries === valuesForKey ? `${key}[${index + 1}]` : key;
         if (only && !only.has(failedKey)) continue;
-        if (!String(valuesForKey[index] ?? "").trim()) continue;
-        const validationError = validateFieldValue(key, valuesForKey[index]);
+        if (!String(entries[index] ?? "").trim()) continue;
+        const validationError = validateFieldValue(key, entries[index]);
         if (validationError) {
           failed.push(failedKey);
           failureReasons[failedKey] = validationError;
@@ -634,7 +781,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
         }
         const previousValue = currentValue(element);
         if (previousValue && !shouldFillExistingValue(mode, previousValue)) continue;
-        if (await setValue(element, valuesForKey[index])) {
+        if (await setValue(element, entries[index])) {
           fillHistory.add({ target: element, value: previousValue });
           filled.push(key);
         } else {
@@ -665,10 +812,12 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     const clickedAdds: string[] = [];
     fillHistory.reset();
     await expandRepeatedSections(values, clickedAdds);
+    await fillSplitYearMonth(values);
     const misses = await writeFields(values, mode, filled, failed, failureReasons);
     if (misses.length) {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
       await expandRepeatedSections(values, clickedAdds);
+      await fillSplitYearMonth(values);
       for (const miss of misses) {
         const index = failed.indexOf(miss);
         if (index >= 0) failed.splice(index, 1);

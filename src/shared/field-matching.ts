@@ -47,18 +47,32 @@ export function sectionAddKeys(label: string): readonly FieldKey[] | null {
   const normalizedPrefix = normalizeFieldLabel(prefix);
   const body = text.slice(text.indexOf(normalizedPrefix) + normalizedPrefix.length);
   if (body.length < 2) return null;
+  return sectionKeysFromTitle(body) ?? sectionKeysFromField(body);
+}
+
+function sectionKeysFromField(body: string): readonly FieldKey[] | null {
   for (const rule of sectionAddRules) {
-    const matchesTerm = rule.terms.some((term) => {
-      const normalized = normalizeFieldLabel(term);
-      return body === normalized || body.includes(normalized) || normalized.includes(body);
-    });
     const matchesField = rule.keys.some((key) => fieldLabelAliases[key].some((alias) => {
       const normalized = normalizeFieldLabel(alias);
       return normalized.length >= 2 && (body === normalized || body.includes(normalized));
     }));
-    if (matchesTerm || matchesField) return rule.keys;
+    if (matchesField) return rule.keys;
   }
   return null;
+}
+
+/** 区块标题对应要展开的简历字段。裸「添加」按钮要用旁边的标题来判断。 */
+export function sectionKeysFromTitle(label: string): readonly FieldKey[] | null {
+  const text = normalizeFieldLabel(label);
+  let best: { keys: readonly FieldKey[]; length: number } | undefined;
+  for (const rule of sectionAddRules) {
+    for (const term of rule.terms) {
+      const normalized = normalizeFieldLabel(term);
+      if (normalized.length < 2 || !text.includes(normalized)) continue;
+      if (!best || normalized.length > best.length) best = { keys: rule.keys, length: normalized.length };
+    }
+  }
+  return best?.keys ?? null;
 }
 
 export function shouldFillExistingValue(mode: "incremental" | "overwrite", currentValue: string) {

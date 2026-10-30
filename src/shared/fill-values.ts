@@ -19,11 +19,50 @@ export function inferMajorCategory(major: string) {
 }
 
 function degreeRank(degree = "") {
-  if (/博士/.test(degree)) return 4;
+  if (/博士/.test(degree)) return 5;
+  if (/MBA|EMBA|工商管理硕士/i.test(degree)) return 4;
   if (/硕士|研究生/.test(degree)) return 3;
   if (/本科|学士/.test(degree)) return 2;
-  if (/大专|专科/.test(degree)) return 1;
+  if (/大专|专科|高职/.test(degree)) return 1;
   return 0;
+}
+
+/** 收成这个招聘表下拉里的原词：本科、硕士、博士、高中、大专、中专、初中及以下、MBA。 */
+export function canonicalDegree(degree = "") {
+  if (/博士/.test(degree)) return "博士";
+  if (/MBA|EMBA|工商管理硕士/i.test(degree)) return "MBA";
+  if (/硕士|研究生/.test(degree)) return "硕士";
+  if (/本科|学士/.test(degree)) return "本科";
+  if (/大专|专科|高职/.test(degree)) return "大专";
+  if (/高中/.test(degree)) return "高中";
+  if (/中专|中职|职高|技校/.test(degree)) return "中专";
+  if (/初中|小学/.test(degree)) return "初中及以下";
+  return degree.trim();
+}
+
+export function highestDegreeText(degrees: readonly string[]) {
+  const ranked = degrees.map((item) => item.trim()).filter(Boolean).sort((left, right) => degreeRank(right) - degreeRank(left));
+  return canonicalDegree(ranked[0] ?? "");
+}
+
+export function choiceCandidates(value: string) {
+  const text = value.trim();
+  const found = new Set<string>(text ? [text] : []);
+  if (/^男/.test(text)) ["男", "男性", "男生"].forEach((item) => found.add(item));
+  if (/^女/.test(text)) ["女", "女性", "女生"].forEach((item) => found.add(item));
+  const groups: Record<string, string[]> = {
+    博士: ["博士", "博士研究生", "博士学历"],
+    MBA: ["MBA", "EMBA", "工商管理硕士"],
+    硕士: ["硕士", "硕士研究生", "研究生", "硕士学历"],
+    本科: ["本科", "大学本科", "学士", "本科学历", "全日制本科"],
+    大专: ["大专", "专科", "大学专科", "高职"],
+    高中: ["高中", "普通高中"],
+    中专: ["中专", "中等专科"],
+    初中及以下: ["初中及以下", "初中", "小学"]
+  };
+  const canonical = canonicalDegree(text);
+  groups[canonical]?.forEach((item) => found.add(item));
+  return [...found];
 }
 
 /** 将简历基础数据和用户确认后的 AI 草稿合并为最终填写值。 */
@@ -53,6 +92,7 @@ export function buildResumeFieldValues(resume: ResumeProfile, overrides: Record<
     majorCategory: repeated(categories),
     highestMajorCategory: highest ? inferMajorCategory(highest.major ?? "") : "",
     degree: repeated(education.map((item) => item.degree ?? "")),
+    highestDegree: highestDegreeText(education.map((item) => item.degree ?? "")),
     educationStartDate: repeated(education.map((item) => item.startTime ?? "")),
     educationEndDate: repeated(education.map((item) => item.endTime ?? "")),
     hasInternship: work.length ? "是" : "",

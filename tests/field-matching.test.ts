@@ -45,6 +45,7 @@ describe("简历字段识别", () => {
     expect(guessFieldKey("专业名称").key).toBe("major");
     expect(guessFieldKey("专业类别").key).toBe("majorCategory");
     expect(guessFieldKey("最高学历专业类别").key).toBe("highestMajorCategory");
+    expect(guessFieldKey("最高学历").key).toBe("highestDegree");
     expect(guessFieldKey("专业技能").key).toBe("skills");
     expect(guessFieldKey("意向城市").key).toBe("targetCity");
     expect(guessFieldKey("是否有实习经验").key).toBe("hasInternship");

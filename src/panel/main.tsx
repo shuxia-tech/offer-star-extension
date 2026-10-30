@@ -109,7 +109,7 @@ function App() {
     ["name", "姓名"], ["phone", "手机号"], ["email", "邮箱"], ["city", "城市"], ["targetCity", "期望城市"],
     ["age", "年龄"], ["gender", "性别"], ["currentStatus", "求职状态"], ["targetSalary", "期望薪资"], ["wechat", "微信"],
     ["website", "个人网站"], ["github", "GitHub"], ["targetPosition", "目标职位"], ["school", "学校"], ["major", "专业"],
-    ["degree", "学历"], ["company", "公司"], ["position", "职位"], ["startDate", "开始日期"], ["endDate", "结束日期"],
+    ["degree", "学历"], ["highestDegree", "最高学历"], ["company", "公司"], ["position", "职位"], ["startDate", "开始日期"], ["endDate", "结束日期"],
     ["description", "工作/自我介绍"], ["skills", "技能"], ["projectName", "项目名称"], ["projectRole", "项目角色"],
     ["projectStartDate", "项目开始时间"], ["projectEndDate", "项目结束时间"], ["projectDescription", "项目描述"]
   ];
