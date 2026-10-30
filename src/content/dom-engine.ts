@@ -93,11 +93,26 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     return false;
   }
 
-  /** 手机号旁边的国家区号下拉不是电话号码本身。 */
+  /** 手机号旁边的国家区号下拉不是电话号码本身。区号有时也是输入框，显示 +86。 */
   function isPhoneCountryControl(element: HTMLElement) {
-    if (element.tagName === "INPUT" || element.tagName === "TEXTAREA" || element.tagName === "SELECT") return false;
+    if (element.tagName === "TEXTAREA") return false;
+    if (element.tagName === "INPUT") {
+      const dialCode = cleanLabel(element.closest("label")?.querySelector(".sd-Input-display-value")?.textContent ?? "");
+      if (/^\+?\d{1,4}$/.test(dialCode)) return true;
+      if (hasClassPrefix(element, "code-") && isPhoneFieldLabel(labelFor(element))) return true;
+      return false;
+    }
+    if (element.tagName === "SELECT") return isPhoneFieldLabel(labelFor(element));
     const selectable = element.getAttribute("role") === "combobox" || element.getAttribute("aria-haspopup") === "listbox" || Boolean(element.closest(".ant-select"));
     return selectable && isPhoneFieldLabel(explicitFieldLabel(element));
+  }
+
+  function hasClassPrefix(element: HTMLElement, prefix: string) {
+    let current: HTMLElement | null = element;
+    for (let depth = 0; current && depth < 8; depth += 1, current = current.parentElement) {
+      if (Array.from(current.classList).some((name) => name.startsWith(prefix))) return true;
+    }
+    return false;
   }
 
   function isNoiseControl(element: HTMLElement) {
@@ -146,7 +161,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
 
   function ancestorFieldLabel(element: HTMLElement) {
     let current: HTMLElement | null = element;
-    for (let depth = 0; current && depth < 7; depth += 1, current = current.parentElement) {
+    for (let depth = 0; current && depth < 12; depth += 1, current = current.parentElement) {
       const previous = current.previousElementSibling;
       if (!(previous instanceof HTMLElement) || previous.querySelector("input, textarea, select")) continue;
       const text = cleanLabel(previous.textContent ?? "");
@@ -192,6 +207,8 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     if (combo && !isPhoneCountryControl(combo)) return combo;
     const radio = group.querySelector<HTMLInputElement>("input[type=radio]");
     if (radio) return radio;
+    const select = group.querySelector<HTMLSelectElement>("select:not([disabled])");
+    if (select) return select;
     return group.querySelector<HTMLElement>("textarea, input.ant-calendar-picker-input, input.ant-input:not([disabled]):not([type=hidden]), input:not([disabled]):not([type=hidden]):not([type=radio]):not([type=checkbox])");
   }
 
@@ -352,6 +369,8 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
       pageValueSetter(element as HTMLInputElement)?.call(element, formatted);
     } else if (await pickPlaceholderOption(element, value)) {
       return true;
+    } else if (isSugarSelect(element)) {
+      return false;
     } else {
       const input = element as HTMLInputElement | HTMLTextAreaElement;
       const inputType = element.tagName === "INPUT" ? (input as HTMLInputElement).type : "";
@@ -437,14 +456,34 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     const clean = cleanLabel(text);
     const wanted = cleanLabel(target);
     if (!wanted) return false;
-    return clean === wanted || optionValue === target || clean.includes(wanted) || (clean.length >= 2 && wanted.includes(clean));
+    return clean === wanted || optionValue === target || clean.includes(wanted) || (wanted.length <= 8 && clean.length >= 2 && clean.length <= 8 && wanted.includes(clean));
   }
 
-  function isPlaceholderSelect(element: HTMLElement) {
+  function classHas(element: Element, fragment: string) {
+    return Array.from(element.classList).some((name) => name.includes(fragment));
+  }
+
+  function closestClass(element: HTMLElement, fragment: string) {
+    let current: HTMLElement | null = element;
+    while (current) {
+      if (classHas(current, fragment)) return current;
+      current = current.parentElement;
+    }
+    return null;
+  }
+
+  /** Sugar 的类名带哈希，例如 sd-Select-container-1Eq4x，不能用精确类名。 */
+  function isSugarSelect(element: HTMLElement) {
+    return Boolean(closestClass(element, "sd-Select"));
+  }
+
+  function isChoiceControl(element: HTMLElement) {
+    if (isPhoneFieldLabel(labelFor(element)) || isPhoneCountryControl(element)) return false;
+    if (isSugarSelect(element)) return true;
     const placeholder = ((element as HTMLInputElement).placeholder ?? "").trim();
-    if (/请选择|请输入|^年$|^月$/.test(placeholder)) return true;
+    if (placeholder === "年" || placeholder === "月" || /^请选择/.test(placeholder)) return true;
     const text = cleanLabel(element.textContent ?? "");
-    return text === "请选择" || text === "年" || text === "月";
+    return text === "请选择" || text === "年" || text === "月" || Boolean(element.closest(".el-select, .ant-select, .ivu-select, .n-select"));
   }
 
   function selectCandidates(value: string) {
@@ -453,34 +492,99 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
       const month = String(Number(value));
       [month, month.padStart(2, "0"), `${month}月`].forEach((item) => found.add(item));
     }
+    if (/至今|present|在职/i.test(value)) ["至今", "在读", "Present"].forEach((item) => found.add(item));
     return [...found];
   }
 
-  /** 点开「请选择 / 请输入 / 年 / 月」下拉，按可见文案点中对应项。 */
+  function choiceNodes(element: HTMLElement, candidates: string[]) {
+    const widget = element.closest(".el-select, .ant-select, .ivu-select, .n-select") ?? element.parentElement ?? element;
+    const scopes: Element[] = [widget];
+    if (widget.parentElement) scopes.push(widget.parentElement);
+    if (widget.nextElementSibling) scopes.push(widget.nextElementSibling);
+    if (widget.parentElement?.nextElementSibling) scopes.push(widget.parentElement.nextElementSibling);
+    queryAllDeep<HTMLElement>("[class*='dropdown'], [class*='Dropdown'], [class*='popup'], [class*='Popup'], [role='listbox']").forEach((panel) => {
+      if (isVisible(panel)) scopes.push(panel);
+    });
+    const local = scopes.flatMap((scope) => Array.from(scope.querySelectorAll<HTMLElement>("li, [role=option], div, span")));
+    const listed = queryAllDeep<HTMLElement>("li, [role=option], div, span").filter((item) => {
+      if (!isVisible(item)) return false;
+      const text = cleanLabel(item.textContent ?? "");
+      if (!candidates.some((candidate) => cleanLabel(candidate) === text)) return false;
+      const siblings = Array.from(item.parentElement?.children ?? []).filter((child) => cleanLabel(child.textContent ?? "").length <= 12);
+      return siblings.length >= 2;
+    });
+    return [...local, ...listed];
+  }
+
+  /** 已经选中的 Sugar 值在展示层，输入框 value 一直是空的。带错误或 ghost 时视为还没提交。 */
+  function sugarCommittedText(element: HTMLElement) {
+    const select = closestClass(element, "sd-Select");
+    if (!select) return "";
+    const display = select.querySelector<HTMLElement>("[class*='sd-Input-display-value']");
+    if (!display) return "";
+    const ghost = Array.from(display.querySelectorAll("*")).some((node) => node instanceof HTMLElement && classHas(node, "ghost"));
+    if (ghost || classHas(select, "sd-Input-error")) return "";
+    const text = cleanLabel(display.textContent ?? "");
+    if (!text || text === "年" || text === "月" || text === "请选择") return "";
+    return text;
+  }
+
+  /** 点开「请选择 / 年 / 月」下拉，只在当前下拉列表里点中对应项。手机号输入框不走这里。 */
   async function pickPlaceholderOption(element: HTMLElement, value: string) {
-    if (!isPlaceholderSelect(element) && !element.closest(".el-select, .ant-select, .ivu-select, .n-select")) return false;
-    if (element.tagName === "INPUT" || element.tagName === "TEXTAREA") {
-      pageValueSetter(element as HTMLInputElement)?.call(element, value);
-      element.dispatchEvent(new Event("input", { bubbles: true }));
-    }
-    const box = element.parentElement;
-    if (box && box !== element.ownerDocument.body) activateControl(box);
-    activateControl(element);
+    if (!isChoiceControl(element)) return false;
+    const sugar = isSugarSelect(element);
     const candidates = selectCandidates(value);
+    if (sugar) pressControl(element);
+    else {
+      const box = element.parentElement;
+      if (box && box !== element.ownerDocument.body) activateControl(box);
+      activateControl(element);
+    }
+    const attempts = sugar ? 12 : 8;
     let option: HTMLElement | undefined;
-    for (let attempt = 0; attempt < 8 && !option; attempt += 1) {
-      option = pickExactOption(queryAllDeep<HTMLElement>("li, [role=option], .el-select-dropdown__item, .ant-select-dropdown-menu-item, .ivu-select-item"), candidates);
-      if (!option) await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    for (let attempt = 0; attempt < attempts && !option; attempt += 1) {
+      option = (sugar ? findSugarOption(element, candidates) : undefined) ?? pickExactOption(choiceNodes(element, candidates), candidates);
+      if (!option) await new Promise<void>((resolve) => setTimeout(resolve, sugar ? 40 : 25));
     }
     if (!option) return false;
-    activateControl(option);
+    const row = closestClass(option, "sd-Menu-container") ?? option;
+    revealOption(row);
+    if (closestClass(row, "sd-Menu-container")) pressControl(row);
+    else activateControl(row);
     element.dataset.offerStarAutofillUsed = "1";
     return true;
   }
 
+  function findSugarOption(element: HTMLElement, candidates: string[]) {
+    const host = closestClass(element, "sd-Dropdown-container") ?? closestClass(element, "sd-Select")?.parentElement ?? undefined;
+    const local = host ? Array.from(host.querySelectorAll<HTMLElement>("[data-key='sugar.select.label']")) : [];
+    const labels = [...local, ...queryAllDeep<HTMLElement>("[data-key='sugar.select.label']")];
+    const label = labels.find((item) => {
+      if (!isVisible(item)) return false;
+      const menu = closestClass(item, "sd-Dropdown-dropdown") ?? closestClass(item, "sd-Select-menu");
+      if (menu && !isVisible(menu)) return false;
+      const text = cleanLabel(item.textContent ?? "");
+      return candidates.some((candidate) => cleanLabel(candidate) === text);
+    });
+    return label ? closestClass(label, "sd-Menu-container") ?? undefined : undefined;
+  }
+
+  function revealOption(option: HTMLElement) {
+    const scroller = closestClass(option, "sd-Select-scrollable");
+    if (scroller) scroller.scrollTop = Math.max(0, option.offsetTop - scroller.clientHeight / 2);
+    if (typeof option.scrollIntoView === "function") option.scrollIntoView({ block: "center" });
+  }
+
+  function pressControl(element: HTMLElement) {
+    const view = ownerWindow(element);
+    element.dispatchEvent(new view.MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    element.dispatchEvent(new view.MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+    activateControl(element);
+  }
+
   function pickExactOption(pool: HTMLElement[], candidates: string[]) {
     const matches = pool.filter((item) => {
-      if (!isVisible(item)) return false;
+      if (!isVisible(item) || closestClass(item, "sd-Input-display-value")) return false;
       if (optionScore(item.textContent ?? "", item.getAttribute("data-value") ?? "", candidates) < 3) return false;
       return !Array.from(item.children).some((child) => child instanceof HTMLElement && optionScore(child.textContent ?? "", "", candidates) >= 3);
     });
@@ -549,6 +653,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
   }
 
   function currentValue(element: HTMLElement) {
+    if (isSugarSelect(element) && element.tagName === "INPUT") return sugarCommittedText(element);
     if (element.isContentEditable || element.getAttribute("contenteditable") === "true") return element.textContent ?? "";
     if (["checkbox", "radio"].includes(element.getAttribute("role") ?? "")) {
       return element.getAttribute("aria-checked") === "true" ? (element.getAttribute("data-value") || element.getAttribute("aria-label") || element.textContent?.trim() || "true") : "";
@@ -565,34 +670,67 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     return "value" in element ? String((element as HTMLInputElement).value ?? "") : "";
   }
 
-  async function fillSplitYearMonth(values: Record<string, FieldValue>) {
-    const grouped = new Map<string, HTMLElement[]>();
-    for (const element of controls()) {
-      const kind = splitDateKind(labelFor(element));
-      const part = ((element as HTMLInputElement).placeholder || element.textContent || "").trim();
-      if (!kind || (part !== "年" && part !== "月")) continue;
-      const list = grouped.get(kind) ?? [];
-      list.push(element);
-      grouped.set(kind, list);
+  function dateSections() {
+    const titles = queryAllDeep<HTMLElement>("span, div, label").filter(isDateTitle).sort(compareTopToBottom);
+    const sections: Array<{ root: HTMLElement; kind: string; row: number; inputs: HTMLElement[] }> = [];
+    let educationRow = 0;
+    let workRow = 0;
+    for (let index = 0; index < titles.length; index += 1) {
+      const title = titles[index];
+      const kind = splitDateKind(cleanLabel(title.textContent ?? ""));
+      const inputs = dateInputsBetween(title, titles[index + 1]);
+      if (inputs.length < 2) continue;
+      sections.push({ root: title, kind, row: kind === "education" ? educationRow++ : workRow++, inputs });
     }
-    for (const [kind, elements] of grouped) {
-      const startKey = kind === "education" ? "educationStartDate" : "startDate";
-      const endKey = kind === "education" ? "educationEndDate" : "endDate";
-      const width = elements.length % 4 === 0 ? 4 : 2;
-      for (let index = 0; index < elements.length; index += width) {
-        const row = Math.floor(index / width);
-        const start = dateParts(valueAt(values[startKey], row));
-        const end = width === 4 ? dateParts(valueAt(values[endKey], row)) : null;
-        if (start) {
-          await pickPlaceholderOption(elements[index], start.year);
-          if (elements[index + 1]) await pickPlaceholderOption(elements[index + 1], start.month);
-        }
-        if (end) {
-          await pickPlaceholderOption(elements[index + 2], end.year);
-          if (elements[index + 3]) await pickPlaceholderOption(elements[index + 3], end.month);
-        }
-      }
+    return sections.sort((left, right) => compareTopToBottom(left.inputs[0], right.inputs[0]));
+  }
+
+  function isDateTitle(title: HTMLElement) {
+    const label = cleanLabel(title.textContent ?? "");
+    if (!splitDateKind(label) || label.length > 12) return false;
+    return !Array.from(title.children).some((child) => splitDateKind(cleanLabel(child.textContent ?? "")));
+  }
+
+  function dateInputsBetween(title: HTMLElement, next?: HTMLElement) {
+    const following = queryAllDeep<HTMLInputElement>("input").filter((input) => {
+      const placeholder = input.placeholder.trim();
+      if (placeholder !== "年" && placeholder !== "月" && !isSugarSelect(input)) return false;
+      if ((title.compareDocumentPosition(input) & Node.DOCUMENT_POSITION_FOLLOWING) === 0) return false;
+      if (next && (input.compareDocumentPosition(next) & Node.DOCUMENT_POSITION_FOLLOWING) === 0) return false;
+      return true;
+    });
+    const ranged = following.filter((input) => input.closest("[class*='month-range']"));
+    const picked = ranged.length >= 4 ? ranged : following;
+    return picked.length > 4 ? picked.slice(0, 4) : picked;
+  }
+
+  async function fillDateSection(section: { kind: string; row: number; inputs: HTMLElement[] }, values: Record<string, FieldValue>) {
+    const startKey = section.kind === "education" ? "educationStartDate" : "startDate";
+    const endKey = section.kind === "education" ? "educationEndDate" : "endDate";
+    const start = dateParts(valueAt(values[startKey], section.row));
+    const end = section.inputs.length >= 4 ? dateParts(valueAt(values[endKey], section.row)) : null;
+    let ok = true;
+    if (start) {
+      if (!(await assignChoice(section.inputs[0], start.year))) ok = false;
+      if (start.month && section.inputs[1] && !(await assignChoice(section.inputs[1], start.month))) ok = false;
     }
+    if (end && section.inputs[2]) {
+      if (!(await assignChoice(section.inputs[2], end.year))) ok = false;
+      if (end.month && section.inputs[3] && !(await assignChoice(section.inputs[3], end.month))) ok = false;
+    }
+    return ok;
+  }
+
+  async function assignChoice(input: HTMLElement | undefined, value: string) {
+    if (!input || !value) return true;
+    if (sameChoice(input, value)) return true;
+    return pickPlaceholderOption(input, value);
+  }
+
+  function sameChoice(element: HTMLElement, expected: string) {
+    const current = cleanLabel(currentValue(element));
+    if (!current) return false;
+    return selectCandidates(expected).some((candidate) => cleanLabel(candidate) === current);
   }
 
   function splitDateKind(label: string) {
@@ -607,12 +745,15 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
   }
 
   function dateParts(value: string) {
-    const match = value.trim().match(/(\d{4})\D+(\d{1,2})/);
+    const trimmed = value.trim();
+    if (/至今|present|在职/i.test(trimmed)) return { year: "至今", month: "" };
+    const match = trimmed.match(/(\d{4})\D+(\d{1,2})/);
     if (!match) return null;
     return { year: match[1], month: String(Number(match[2])) };
   }
 
   async function expandRepeatedSections(values: Record<string, FieldValue>, clickedAdds: string[]) {
+    let added = 0;
     for (const rule of sectionAddRules) {
       const requested = Math.max(...rule.keys.map((key) => entryCount(values[key])), 0);
       if (requested < 1) continue;
@@ -626,10 +767,12 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
         clickedAdds.push(cleanLabel(trigger.textContent ?? "") || rule.terms[0]);
         const next = await waitForSectionGrowth(rule.keys, current);
         if (next <= current) break;
+        added += next - current;
         current = next;
         attempts += 1;
       }
     }
+    return added;
   }
 
   function activateControl(element: HTMLElement) {
@@ -647,7 +790,8 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
   }
 
   function sectionFieldCount(keys: readonly string[]) {
-    return Math.max(...keys.map((key) => scan().filter((field) => field.key === key).length), 0);
+    const anchor = keys[0];
+    return scan().filter((field) => field.key === anchor).length;
   }
 
   function addSectionControls(keys: readonly string[]) {
@@ -691,7 +835,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
   }
 
   async function waitForSectionGrowth(keys: readonly string[], previous: number) {
-    const pauses = /jsdom/i.test(ownerWindow(document.documentElement).navigator?.userAgent ?? "") ? [0] : [0, 50, 300];
+    const pauses = /jsdom/i.test(ownerWindow(document.documentElement).navigator?.userAgent ?? "") ? [0] : [0, 80, 240, 600];
     let count = previous;
     for (const pause of pauses) {
       if (pause) await new Promise<void>((resolve) => setTimeout(resolve, pause));
@@ -750,47 +894,108 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     return hasGroups ? undefined : currentFields[occurrence];
   }
 
+  function compareTopToBottom(left: HTMLElement, right: HTMLElement) {
+    const leftRect = left.getBoundingClientRect();
+    const rightRect = right.getBoundingClientRect();
+    if (Math.abs(leftRect.top - rightRect.top) > 1) return leftRect.top - rightRect.top;
+    if (Math.abs(leftRect.left - rightRect.left) > 1) return leftRect.left - rightRect.left;
+    const position = left.compareDocumentPosition(right);
+    if (position & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+    if (position & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+    return 0;
+  }
+
   async function writeFields(values: Record<string, FieldValue>, mode: "incremental" | "overwrite", filled: string[], failed: string[], failureReasons: Record<string, string>, only?: Set<string>) {
     const misses: string[] = [];
-    for (const [key, nextValue] of Object.entries(values)) {
-      if (key === "photo" || key === "attachment") continue;
-      const valuesForKey = Array.isArray(nextValue) ? nextValue : [nextValue];
-      const degreeCount = key === "degree" ? scan().filter((item) => item.key === "degree").length : 0;
-      const entries = key === "degree" && degreeCount <= 1
-        ? [highestDegreeText(valuesForKey.map((item) => String(item ?? ""))) || String(valuesForKey[0] ?? "")]
-        : valuesForKey;
-      for (let index = 0; index < entries.length; index += 1) {
-        const failedKey = Array.isArray(nextValue) && entries === valuesForKey ? `${key}[${index + 1}]` : key;
-        if (only && !only.has(failedKey)) continue;
-        if (!String(entries[index] ?? "").trim()) continue;
-        const validationError = validateFieldValue(key, entries[index]);
-        if (validationError) {
-          failed.push(failedKey);
-          failureReasons[failedKey] = validationError;
-          continue;
+    const seen = new Map<string, number>();
+    const degreeCount = scan().filter((item) => item.key === "degree").length;
+    const sections = dateSections();
+    const sectionInputs = new Set(sections.flatMap((section) => section.inputs));
+    const started = new Set<HTMLElement>();
+    const ordered = scan().flatMap((field) => {
+      const element = controls()[field.elementIndex];
+      return element ? [{ field, element }] : [];
+    }).sort((left, right) => compareTopToBottom(left.element, right.element));
+    for (const item of ordered) {
+      const section = sections.find((entry) => entry.inputs.includes(item.element));
+      if (section) {
+        const startKey = section.kind === "education" ? "educationStartDate" : "startDate";
+        const endKey = section.kind === "education" ? "educationEndDate" : "endDate";
+        seen.set(startKey, (seen.get(startKey) ?? 0) + 1);
+        seen.set(endKey, (seen.get(endKey) ?? 0) + 1);
+        if ((!only || dateSectionSelected(section, only)) && !started.has(section.root)) {
+          started.add(section.root);
+          const filledDate = await fillDateSection(section, values);
+          if (!filledDate) {
+            const failedKey = `${startKey}[${section.row + 1}]`;
+            failed.push(failedKey);
+            failureReasons[failedKey] = "时间下拉没有点中对应的年或月";
+            misses.push(failedKey);
+          }
         }
-        // 每次写入前重新扫描，兼容 React/Vue 输入事件导致的节点替换。
-        const currentFields = scan().filter((item) => item.key === key);
-        const field = fieldAt(currentFields, index);
-        const element = field ? controls()[field.elementIndex] : undefined;
-        if (!element) {
-          failed.push(failedKey);
-          failureReasons[failedKey] = "没有找到对应页面控件";
-          misses.push(failedKey);
-          continue;
-        }
-        const previousValue = currentValue(element);
-        if (previousValue && !shouldFillExistingValue(mode, previousValue)) continue;
-        if (await setValue(element, entries[index])) {
-          fillHistory.add({ target: element, value: previousValue });
-          filled.push(key);
-        } else {
-          failed.push(failedKey);
-          failureReasons[failedKey] = "控件不支持该值或候选项未匹配";
-        }
+        continue;
+      }
+      if (!item.field.key || item.field.key === "photo" || item.field.key === "attachment") continue;
+      if (sectionInputs.has(item.element)) continue;
+      const key = item.field.key;
+      const occurrence = seen.get(key) ?? 0;
+      seen.set(key, occurrence + 1);
+      const raw = values[key];
+      const listed = Array.isArray(raw) ? raw : [raw];
+      const text = key === "degree" && degreeCount <= 1
+        ? highestDegreeText(listed.map((entry) => String(entry ?? ""))) || String(listed[0] ?? "")
+        : valueAt(raw, occurrence);
+      const failedKey = Array.isArray(raw) && !(key === "degree" && degreeCount <= 1) ? `${key}[${occurrence + 1}]` : key;
+      if (only && !only.has(failedKey)) continue;
+      if (!text.trim()) continue;
+      const validationError = validateFieldValue(key, text);
+      if (validationError) {
+        failed.push(failedKey);
+        failureReasons[failedKey] = validationError;
+        continue;
+      }
+      const element = liveControl(key, occurrence) ?? item.element;
+      if (!element.isConnected) {
+        failed.push(failedKey);
+        failureReasons[failedKey] = "没有找到对应页面控件";
+        misses.push(failedKey);
+        continue;
+      }
+      const previousValue = currentValue(element);
+      if (previousValue && !shouldFillExistingValue(mode, previousValue)) continue;
+      if (await setValue(element, text)) {
+        fillHistory.add({ target: element, value: previousValue });
+        filled.push(key);
+      } else {
+        failed.push(failedKey);
+        failureReasons[failedKey] = "控件不支持该值或候选项未匹配";
+        misses.push(failedKey);
       }
     }
+    for (const [key, raw] of Object.entries(values)) {
+      if (key === "photo" || key === "attachment" || seen.has(key)) continue;
+      if (scan().some((item) => item.key === key)) continue;
+      const present = Array.isArray(raw) ? raw.some((entry) => String(entry ?? "").trim()) : String(raw ?? "").trim();
+      if (!present) continue;
+      if (only && !only.has(key)) continue;
+      failed.push(key);
+      failureReasons[key] = "没有找到对应页面控件";
+      misses.push(key);
+    }
     return misses;
+  }
+
+  function dateSectionSelected(section: { kind: string; row: number }, only: Set<string>) {
+    const start = section.kind === "education" ? "educationStartDate" : "startDate";
+    const end = section.kind === "education" ? "educationEndDate" : "endDate";
+    const row = String(section.row + 1);
+    return [start, end, `${start}[${row}]`, `${end}[${row}]`].some((key) => only.has(key));
+  }
+
+  function liveControl(key: string, occurrence: number) {
+    const fields = scan().filter((item) => item.key === key);
+    const field = fieldAt(fields, occurrence);
+    return field ? controls()[field.elementIndex] : undefined;
   }
 
   /** 只确认当前正在编辑的经历段，不点击申请、提交或投递。 */
@@ -812,18 +1017,20 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     const clickedAdds: string[] = [];
     fillHistory.reset();
     await expandRepeatedSections(values, clickedAdds);
-    await fillSplitYearMonth(values);
     const misses = await writeFields(values, mode, filled, failed, failureReasons);
-    if (misses.length) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      await expandRepeatedSections(values, clickedAdds);
-      await fillSplitYearMonth(values);
-      for (const miss of misses) {
-        const index = failed.indexOf(miss);
-        if (index >= 0) failed.splice(index, 1);
-        delete failureReasons[miss];
+    const added = await expandRepeatedSections(values, clickedAdds);
+    if (misses.length || added) {
+      if (added) {
+        failed.splice(0, failed.length);
+        for (const key of Object.keys(failureReasons)) delete failureReasons[key];
+      } else {
+        for (const miss of misses) {
+          const index = failed.indexOf(miss);
+          if (index >= 0) failed.splice(index, 1);
+          delete failureReasons[miss];
+        }
       }
-      await writeFields(values, mode, filled, failed, failureReasons, new Set(misses));
+      await writeFields(values, mode, filled, failed, failureReasons, added ? undefined : new Set(misses));
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     await confirmEditedSegments();

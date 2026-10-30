@@ -70,4 +70,16 @@ describe("页面内 Vue 表单桥接", () => {
     expect(clicks).toBe(1);
     expect(button.getAttribute("data-offer-star-activated")).toBe("1");
   });
+
+  it("页面用非对象注册 click 时不会抛出 WeakMap 异常", () => {
+    installOfferStarPageBridge(document);
+    const detached = EventTarget.prototype.addEventListener;
+    let message = "";
+    try {
+      detached.call(1 as unknown as EventTarget, "click", () => undefined);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message.toLowerCase()).not.toContain("weak map");
+  });
 });

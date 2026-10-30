@@ -133,6 +133,29 @@ describe("Ant Design 申请表", () => {
     expect(result.filled).toEqual(expect.arrayContaining(["name", "phone", "gender", "targetCity"]));
   });
 
+  it("图普申请表性别是原生 select 时也能扫描并填写", async () => {
+    document.body.innerHTML = `
+      <form id="candidateForm">
+        <div class="field-group"><span class="field-label"><span class="require_tip">*</span>性别</span>
+          <select class="gender-select"><option value="">请选择</option><option value="1">男</option><option value="2">女</option></select>
+        </div>
+        <div class="field-group"><span class="field-label"><span class="require_tip">*</span>手机号</span>
+          <select class="country-code"><option value="+86">+86</option></select>
+          <input class="ant-input phone-input" />
+        </div>
+      </form>
+    `;
+    const engine = createDomEngine(document, "https://careersite.example.com/apply");
+    expect(engine.scan().map((field) => field.key)).toEqual(["gender", "phone"]);
+    const result = await engine.fill({ gender: "女", phone: "13800000000" }, "overwrite");
+    const genderSelect = document.querySelector<HTMLSelectElement>(".gender-select")!;
+    const phoneInput = document.querySelector<HTMLInputElement>(".phone-input")!;
+    expect(genderSelect.value).toBe("2");
+    expect(phoneInput.value).toBe("13800000000");
+    expect(result.filled).toEqual(expect.arrayContaining(["gender", "phone"]));
+    expect(result.failed).toEqual([]);
+  });
+
   it("教育背景和实习经历要点添加后才出现输入框", async () => {
     document.body.innerHTML = `
       <form id="candidateForm">

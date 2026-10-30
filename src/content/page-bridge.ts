@@ -5,7 +5,7 @@ type FieldVm = {
 
 type MomentFactory = (input: string) => { _isValid?: boolean };
 
-const trackedClicks = new WeakMap<EventTarget, Map<string, number>>();
+const trackedClicks = new WeakMap<object, Map<string, number>>();
 
 /** 在页面自己的脚本环境里提交字段。内容脚本读不到 Vue 实例，直接改输入框会被页面清掉。 */
 export function installOfferStarPageBridge(doc: Document = document) {
@@ -90,15 +90,23 @@ function captureFlag(options?: boolean | AddEventListenerOptions) {
   return typeof options === "boolean" ? options : Boolean(options?.capture);
 }
 
-function noteListener(target: EventTarget, type: string, capture: boolean, delta: number) {
-  if (type !== "click") return;
-  const key = capture ? "capture" : "bubble";
-  const bag = trackedClicks.get(target) ?? new Map<string, number>();
-  const next = (bag.get(key) ?? 0) + delta;
-  if (next > 0) bag.set(key, next);
-  else bag.delete(key);
-  if (bag.size) trackedClicks.set(target, bag);
-  else trackedClicks.delete(target);
+function canUseAsWeakKey(value: unknown): value is object {
+  return (typeof value === "object" || typeof value === "function") && value !== null;
+}
+
+function noteListener(target: unknown, type: string, capture: boolean, delta: number) {
+  if (type !== "click" || !canUseAsWeakKey(target)) return;
+  try {
+    const key = capture ? "capture" : "bubble";
+    const bag = trackedClicks.get(target) ?? new Map<string, number>();
+    const next = (bag.get(key) ?? 0) + delta;
+    if (next > 0) bag.set(key, next);
+    else bag.delete(key);
+    if (bag.size) trackedClicks.set(target, bag);
+    else trackedClicks.delete(target);
+  } catch {
+    // 个别网页会用不能作为 WeakMap 键的值注册事件，记录失败不能打断页面脚本。
+  }
 }
 
 function trackClickListeners(view: Window) {
@@ -108,13 +116,13 @@ function trackClickListeners(view: Window) {
   if (current.__offerStarTracked) return;
   const originalAdd = proto.addEventListener;
   const originalRemove = proto.removeEventListener;
-  const add = function (this: EventTarget, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
+  const add = function (this: unknown, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
     if (listener) noteListener(this, String(type), captureFlag(options), 1);
     return originalAdd.call(this, type, listener, options);
   };
   add.__offerStarTracked = true;
   proto.addEventListener = add;
-  proto.removeEventListener = function (this: EventTarget, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions) {
+  proto.removeEventListener = function (this: unknown, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | EventListenerOptions) {
     if (listener) noteListener(this, String(type), captureFlag(options), -1);
     return originalRemove.call(this, type, listener, options);
   };

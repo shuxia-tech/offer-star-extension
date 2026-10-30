@@ -13,7 +13,7 @@ describe("重复表单区块填写", () => {
     `;
     const engine = createDomEngine(document, "https://www.zhipin.com/job/1");
     const result = await engine.fill({ company: ["甲公司", "乙公司"], position: ["产品经理", "运营经理"] }, "overwrite");
-    expect(result.filled).toEqual(["company", "company", "position", "position"]);
+    expect(result.filled).toEqual(["company", "position", "company", "position"]);
     expect(Array.from(document.querySelectorAll<HTMLInputElement>("input")).map((input) => input.value)).toEqual(["甲公司", "产品经理", "乙公司", "运营经理"]);
   });
 
