@@ -106,7 +106,7 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendR
   }
   if (message.type === "FILL_FIELDS") {
     formNoticeGate.engage();
-    void engine.fill(message.values, message.mode).then(sendResponse).finally(() => {
+    void engine.fill(message.values, message.mode, { debug: message.debug }).then(sendResponse).finally(() => {
       formNoticeGate.releaseAfter(AUTOFILL_FORM_NOTICE_SETTLE_MS);
     });
     return true;

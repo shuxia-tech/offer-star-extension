@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyAiMappings, applyManualFieldConfirmation, filterValuesByConfidence } from "../src/shared/ai-mapping";
+import { applyAiMappings, applyManualFieldConfirmation, filterValuesByConfidence, valuesForAutofill } from "../src/shared/ai-mapping";
 
 describe("AI 字段映射", () => {
   it("只更新模型明确返回的字段并保留未映射字段", () => {
@@ -52,5 +52,14 @@ describe("AI 字段映射", () => {
     ];
     const confirmed = applyManualFieldConfirmation(fields, "company-2", "company");
     expect(filterValuesByConfidence({ company: ["甲公司", "乙公司"] }, confirmed)).toEqual({ company: ["甲公司", "乙公司"] });
+  });
+
+  it("页面还没有教育输入框时，仍保留简历里的教育经历用来点添加", () => {
+    const values = valuesForAutofill({ name: "测试用户", school: "示例大学", company: ["示例公司"] }, [
+      { id: "name", key: "name", label: "姓名", type: "input", elementIndex: 0, confidence: 0.86 }
+    ]);
+    expect(values.school).toBe("示例大学");
+    expect(values.company).toEqual(["示例公司"]);
+    expect(values.name).toBe("测试用户");
   });
 });

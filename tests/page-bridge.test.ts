@@ -32,4 +32,42 @@ describe("页面内 Vue 表单桥接", () => {
     input.dispatchEvent(new CustomEvent("offer-star-commit-field", { bubbles: true }));
     expect(seen).toEqual([{ _isValid: true, formatted: "2024-09-01" }]);
   });
+
+  it("能读出按钮上的 onclick 和 Vue click", () => {
+    document.body.innerHTML = `<button class="add_btn">添加 教育背景</button>`;
+    const button = document.querySelector("button")!;
+    button.onclick = () => undefined;
+    (button as HTMLButtonElement & { __vue__?: unknown }).__vue__ = { $listeners: { click: () => undefined } };
+    installOfferStarPageBridge(document);
+    button.dispatchEvent(new CustomEvent("offer-star-inspect-click", { bubbles: true }));
+    expect(button.getAttribute("data-offer-star-click")).toContain("onclick");
+    expect(button.getAttribute("data-offer-star-click")).toContain("vue");
+  });
+
+  it("能记住所用 addEventListener 挂上的 click，包括父级", () => {
+    document.body.innerHTML = `<div class="add_fieldGroup"><button class="add_btn">添加 教育背景</button></div>`;
+    installOfferStarPageBridge(document);
+    const button = document.querySelector("button")!;
+    const parent = document.querySelector("div")!;
+    const onButton = () => undefined;
+    button.addEventListener("click", onButton);
+    button.dispatchEvent(new CustomEvent("offer-star-inspect-click", { bubbles: true }));
+    expect(button.getAttribute("data-offer-star-click")).toContain("listener");
+    expect(button.getAttribute("data-offer-star-click-at")).toBe("自身");
+    button.removeEventListener("click", onButton);
+    parent.addEventListener("click", () => undefined);
+    button.dispatchEvent(new CustomEvent("offer-star-inspect-click", { bubbles: true }));
+    expect(button.getAttribute("data-offer-star-click-at")).toBe("父级 div.add_fieldGroup");
+  });
+
+  it("在页面环境里派发按钮点击", () => {
+    document.body.innerHTML = `<button class="add_btn">添加 教育背景</button>`;
+    installOfferStarPageBridge(document);
+    const button = document.querySelector("button")!;
+    let clicks = 0;
+    button.addEventListener("click", () => { clicks += 1; });
+    button.dispatchEvent(new CustomEvent("offer-star-activate", { bubbles: true }));
+    expect(clicks).toBe(1);
+    expect(button.getAttribute("data-offer-star-activated")).toBe("1");
+  });
 });

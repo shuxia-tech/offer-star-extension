@@ -136,24 +136,35 @@ describe("Ant Design 申请表", () => {
   it("教育背景和实习经历要点添加后才出现输入框", async () => {
     document.body.innerHTML = `
       <form id="candidateForm">
-        <section class="edu-block"><div class="add-edu">＋ 添加 教育背景</div></section>
-        <section class="intern-block"><div class="add-intern">＋ 添加 实习经历</div></section>
+        <div class="add_fieldGroup" style="display: none;"><button type="button" class="add_btn hidden-edu"><i></i> 添加 教育背景 </button></div>
+        <section class="edu-block"><div class="add_fieldGroup"><button type="button" class="add_btn add-edu"><i></i> 添加 教育背景 </button></div></section>
+        <section class="intern-block"><div class="add_fieldGroup"><button type="button" class="add_btn add-intern"><i></i> 添加 实习经历 </button></div></section>
         <button type="button" id="save_resume">保存去投递</button>
       </form>
     `;
     let submitClicks = 0;
     document.querySelector("#save_resume")?.addEventListener("click", () => { submitClicks += 1; });
-    document.querySelector(".add-edu")?.addEventListener("click", () => {
+    let hiddenClicks = 0;
+    document.querySelector(".hidden-edu")?.addEventListener("click", () => { hiddenClicks += 1; });
+    const visibleEdu = document.querySelector<HTMLButtonElement>(".add-edu");
+    if (visibleEdu) visibleEdu.onclick = () => undefined;
+    document.querySelector(".add-edu")?.addEventListener("click", (event) => {
+      if (event.target !== event.currentTarget) return;
       document.querySelector(".edu-block")?.insertAdjacentHTML("beforeend", `<div class="field-group"><span class="field-label">学校名称</span><input class="ant-input school-input" /></div>`);
     });
-    document.querySelector(".add-intern")?.addEventListener("click", () => {
+    document.querySelector(".add-intern")?.addEventListener("click", (event) => {
+      if (event.target !== event.currentTarget) return;
       document.querySelector(".intern-block")?.insertAdjacentHTML("beforeend", `<div class="field-group"><span class="field-label">公司名称</span><input class="ant-input company-input" /></div>`);
     });
     const engine = createDomEngine(document, "https://careersite.example.com/apply");
-    const result = await engine.fill({ school: "示例大学", company: "示例公司" }, "overwrite");
+    const result = await engine.fill({ school: "示例大学", company: "示例公司" }, "overwrite", { debug: true });
     expect(document.querySelector<HTMLInputElement>(".school-input")?.value).toBe("示例大学");
     expect(document.querySelector<HTMLInputElement>(".company-input")?.value).toBe("示例公司");
     expect(submitClicks).toBe(0);
+    expect(hiddenClicks).toBe(0);
+    expect(result.debug?.addButtons.some((item) => item.text.includes("添加 教育背景") && !item.visible && !item.onclick)).toBe(true);
+    expect(result.debug?.addButtons.some((item) => item.className.includes("add-edu") && item.visible && item.onclick && item.clickListener.includes("onclick"))).toBe(true);
+    expect(document.querySelector(".add-edu")?.getAttribute("style") ?? "").not.toContain("outline");
     expect(result.filled).toEqual(expect.arrayContaining(["school", "company"]));
   });
 });

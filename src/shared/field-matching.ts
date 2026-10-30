@@ -38,12 +38,25 @@ export function isSensitiveFieldLabel(label: string) {
   return sensitiveLabelTerms.some((term) => label.includes(term));
 }
 
-/** 添加按钮去掉前缀后，对应要展开的简历字段。 */
+/** 添加按钮去掉前缀后，对应要展开的简历字段。文案可以是区块名，也可以是该区块里的字段名。 */
 export function sectionAddKeys(label: string): readonly FieldKey[] | null {
   const text = normalizeFieldLabel(label).replace(/^[+＋]/, "");
+  const prefix = [...addActionPrefixes].sort((left, right) => normalizeFieldLabel(right).length - normalizeFieldLabel(left).length)
+    .find((item) => text.includes(normalizeFieldLabel(item)));
+  if (!prefix) return null;
+  const normalizedPrefix = normalizeFieldLabel(prefix);
+  const body = text.slice(text.indexOf(normalizedPrefix) + normalizedPrefix.length);
+  if (body.length < 2) return null;
   for (const rule of sectionAddRules) {
-    const matched = rule.terms.some((term) => addActionPrefixes.some((prefix) => text === normalizeFieldLabel(prefix + term)));
-    if (matched) return rule.keys;
+    const matchesTerm = rule.terms.some((term) => {
+      const normalized = normalizeFieldLabel(term);
+      return body === normalized || body.includes(normalized) || normalized.includes(body);
+    });
+    const matchesField = rule.keys.some((key) => fieldLabelAliases[key].some((alias) => {
+      const normalized = normalizeFieldLabel(alias);
+      return normalized.length >= 2 && (body === normalized || body.includes(normalized));
+    }));
+    if (matchesTerm || matchesField) return rule.keys;
   }
   return null;
 }

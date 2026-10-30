@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import type { AiAnalysisResult, DetectedField, ExtensionMessage, FieldKey, FilePayload, PageCommand, ResumeProfile, ResumeSummary, UserProfile } from "../shared/messages";
 import { browser } from "wxt/browser";
 import { getSiteAdapter } from "../shared/site-adapters";
-import { applyAiMappings, applyManualFieldConfirmation, filterValuesByConfidence } from "../shared/ai-mapping";
+import { applyAiMappings, applyManualFieldConfirmation, valuesForAutofill } from "../shared/ai-mapping";
 import { buildResumeFieldValues } from "../shared/fill-values";
 import { draftOverridesFromResult } from "../shared/draft-state";
 import { FORM_UPDATED_NOTICE, LOGIN_FORM_NOTICE_SUPPRESS_MS, formNoticeAfterLogin, getStalePageMessage, shouldSuppressFormNotice } from "./page-guards";
@@ -22,6 +22,7 @@ import { hasExtensionTokenChange } from "../shared/storage-change";
 import { buildAiRequestBody, sanitizePageUrl, sanitizeText } from "../shared/privacy";
 import { withRequestTimeout } from "../shared/request-timeout";
 import { ResumePreview, ResumePreviewSkeleton } from "./resume-preview";
+import { buildScanDebug, ScanDebugPanel, showScanDebug, type ScanDebugReport } from "./scan-debug";
 import "./styles.css";
 
 /** 将浏览器消息异常转换为用户可以直接采取行动的中文提示。 */
@@ -101,7 +102,8 @@ function App() {
   const autofillGenerationRef = useRef(0);
   const aiRequestRef = useRef(0);
   const [pageStale, setPageStale] = useState(false);
-  const [panelTab, setPanelTab] = useState<"fill" | "preview">("fill");
+  const [panelTab, setPanelTab] = useState<"fill" | "preview" | "scan">("fill");
+  const [scanDebug, setScanDebug] = useState<ScanDebugReport | null>(null);
   const [minutesSaved, setMinutesSaved] = useState(0);
   const fieldOptions: Array<[FieldKey, string]> = [
     ["name", "姓名"], ["phone", "手机号"], ["email", "邮箱"], ["city", "城市"], ["targetCity", "期望城市"],
@@ -460,10 +462,20 @@ function App() {
       const scanned = applySavedFieldOverrides(scan?.fields ?? [], adapter.id, (stored.siteFieldOverrides ?? {}) as SiteFieldOverrides);
       setFields(scanned);
       setPageStale(false);
-      const values = filterValuesByConfidence(buildResumeFieldValues(profile, draftOverrides), scanned);
+      const values = valuesForAutofill(buildResumeFieldValues(profile, draftOverrides), scanned);
       const recognized = scanned.filter((field) => field.key).length;
       const hasResumeValue = Object.values(values).some((value) => Array.isArray(value) ? value.some((item) => String(item).trim()) : String(value ?? "").trim());
-      const result = await sendToPage(tab.id, { type: "FILL_FIELDS", values, mode: "incremental" });
+      const result = await sendToPage(tab.id, { type: "FILL_FIELDS", values, mode: "incremental", debug: showScanDebug });
+      if (showScanDebug) {
+        setScanDebug(buildScanDebug({
+          scanned,
+          values,
+          filled: result?.filled ?? [],
+          failureReasons: result?.failureReasons ?? {},
+          debug: result?.debug
+        }));
+        setPanelTab("scan");
+      }
       const filledCount = result?.filled?.length ?? 0;
       const failedCount = (result?.failed ?? []).length;
       const metricStore = await browser.storage.local.get("siteMetrics");
@@ -566,7 +578,7 @@ function App() {
       const tab = await getTargetTab();
       if (!tab.id) { setPhase("review"); setMessage("无法访问当前页面"); return; }
       if (!resume) { setPhase("review"); setMessage("请先选择一份简历"); return; }
-      const values = filterValuesByConfidence(buildResumeFieldValues(resume, draftOverrides), fields);
+      const values = valuesForAutofill(buildResumeFieldValues(resume, draftOverrides), fields);
       const result = await sendToPage(tab.id, { type: "FILL_FIELDS", values, mode: fillMode });
       setPhase("done");
       const failed = (result?.failed ?? []) as string[];
@@ -750,22 +762,23 @@ function App() {
       <button className="account-action account-logout" type="button" onClick={() => void clearExtensionToken()}>退出</button>
     </section> : null}
 
-    <div className="panel-tabs" role="tablist" aria-label="插件功能">
+    <div className={`panel-tabs${showScanDebug ? " panel-tabs-debug" : ""}`} role="tablist" aria-label="插件功能">
       <button type="button" role="tab" aria-selected={panelTab === "fill"} className={panelTab === "fill" ? "tab-active" : ""} onClick={() => setPanelTab("fill")}>自动填充</button>
       <button type="button" role="tab" aria-selected={panelTab === "preview"} className={panelTab === "preview" ? "tab-active" : ""} onClick={() => setPanelTab("preview")}>简历预览</button>
+      {showScanDebug ? <button type="button" role="tab" aria-selected={panelTab === "scan"} className={panelTab === "scan" ? "tab-active" : ""} onClick={() => setPanelTab("scan")}>扫描结果</button> : null}
     </div>
 
     {message ? <div className={`status-banner status-${phase}${securityBlocked ? " status-security" : ""}`} role="status" aria-live="polite" aria-atomic="true">{message}</div> : null}
 
-    {panelTab === "fill" ? <section className="smart-fill">
+    {panelTab === "scan" && showScanDebug ? <ScanDebugPanel report={scanDebug} /> : panelTab === "fill" ? <section className="smart-fill">
       <h3>智能表单填充</h3>
       <p>识别当前页面的表单并自动填写。</p>
-      <div className="fill-hero">
+      <div className={`fill-hero${phase === "filling" ? " fill-hero-busy" : ""}`}>
         <div className="fill-hero-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" /></svg></div>
         <strong>自动填充此职位申请</strong>
         <span>到目前为止，您已通过自动填充节省了 {minutesSaved} 分钟 🔥</span>
-        <button className="fill-submit" type="button" onClick={() => void (authState === "signed-in" ? autofillPage() : openOfferStarLogin())} disabled={phase === "filling" || loginPending || authState === "checking"}>
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" /></svg>
+        <button className={`fill-submit${phase === "filling" ? " fill-submit-busy" : ""}`} type="button" aria-busy={phase === "filling"} onClick={() => void (authState === "signed-in" ? autofillPage() : openOfferStarLogin())} disabled={phase === "filling" || loginPending || authState === "checking"}>
+          {phase === "filling" ? <span className="fill-spinner" aria-hidden="true" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" /></svg>}
           {phase === "filling" ? "正在填写…" : authState === "signed-in" ? "自动填充此页面" : loginPending ? "正在打开…" : "微信扫码登录"}
         </button>
         {authState !== "signed-in" && authState !== "checking" ? <button className="fill-refresh" type="button" onClick={() => void refreshWebsiteLogin()}>我已登录</button> : null}

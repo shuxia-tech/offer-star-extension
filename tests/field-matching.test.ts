@@ -24,6 +24,11 @@ describe("简历字段识别", () => {
     expect(guessFieldKey("离职日期").key).toBe("endDate");
   });
 
+  it("把实习工作职责/内容对应到工作经历内容", () => {
+    expect(guessFieldKey("实习工作职责/内容").key).toBe("description");
+    expect(guessFieldKey("工作职责").key).toBe("description");
+  });
+
   it.each([
     ["性别", "gender"], ["年龄", "age"], ["期望城市", "targetCity"],
     ["求职状态", "currentStatus"], ["期望薪资", "targetSalary"], ["微信号", "wechat"],

@@ -6,10 +6,27 @@ import { getSiteAdapter } from "../shared/site-adapters";
 import { validateFieldValue } from "../shared/field-value-validation";
 import { sanitizePageUrl } from "../shared/privacy";
 
+export type ScanDebugAddButton = {
+  text: string;
+  tag: string;
+  className: string;
+  visible: boolean;
+  keys: string;
+  onclick: boolean;
+  clickListener: string;
+};
+
+export type ScanDebugSnapshot = {
+  hasCandidateForm: boolean;
+  addButtons: ScanDebugAddButton[];
+  fieldsAfter: DetectedField[];
+  clickedAdds: string[];
+};
+
 export type DomEngine = {
   scan(): DetectedField[];
   scanDeep(): Promise<DetectedField[]>;
-  fill(values: Record<string, FieldValue>, mode: "incremental" | "overwrite"): Promise<{ filled: string[]; failed: string[]; failureReasons: Record<string, string> }>;
+  fill(values: Record<string, FieldValue>, mode: "incremental" | "overwrite", options?: { debug?: boolean }): Promise<{ filled: string[]; failed: string[]; failureReasons: Record<string, string>; debug?: ScanDebugSnapshot }>;
   undo(): Promise<{ restored: string[] }>;
   advanceStep(): Promise<{ advanced: boolean; label?: string }>;
   fillPhoto(dataUrl: string, fileName: string, mimeType: string): Promise<{ filled: boolean }>;
@@ -19,32 +36,6 @@ export type DomEngine = {
 /** 页面 DOM 填写引擎。消息路由只负责浏览器通信，所有字段操作都在这里集中实现并可独立测试。 */
 export function createDomEngine(document: Document, pageUrl: string): DomEngine {
   const fillHistory = createFillHistory<HTMLElement>();
-  let highlighted: { element: HTMLElement; boxShadow: string; transition: string } | undefined;
-
-  function clearFillHighlight() {
-    if (!highlighted) return;
-    highlighted.element.style.boxShadow = highlighted.boxShadow;
-    highlighted.element.style.transition = highlighted.transition;
-    highlighted = undefined;
-  }
-
-  /** 先聚到当前字段所在行，再在 300ms 内滚到可视区域，然后才写入。 */
-  async function revealFillTarget(element: HTMLElement) {
-    clearFillHighlight();
-    const group = element.closest(".field-group");
-    const region = group instanceof HTMLElement ? group : element;
-    const view = ownerWindow(region);
-    const reduceMotion = view.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-    highlighted = { element: region, boxShadow: region.style.boxShadow, transition: region.style.transition };
-    region.style.transition = reduceMotion ? "" : "box-shadow 300ms ease";
-    region.style.boxShadow = "0 0 0 3px rgba(22, 119, 255, 0.45)";
-    try {
-      region.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center", inline: "nearest" });
-    } catch { /* 测试环境可能没有滚动实现 */ }
-    try { element.focus({ preventScroll: true }); } catch { element.focus(); }
-    const jsdom = /jsdom/i.test(view.navigator?.userAgent ?? "");
-    if (!reduceMotion && !jsdom) await new Promise<void>((resolve) => setTimeout(resolve, 300));
-  }
 
   /** 查询主文档、开放式 Shadow DOM 和同源 iframe；跨域 iframe 由浏览器安全策略自然隔离。 */
   function queryAllDeep<T extends HTMLElement>(selector: string, root: Document | ShadowRoot = document, depth = 0): T[] {
@@ -91,6 +82,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
   function isEffectivelyHidden(element: HTMLElement) {
     let current: HTMLElement | null = element;
     while (current) {
+      if (current.style.display.trim() === "none" || current.style.visibility.trim() === "hidden") return true;
       if (current.getAttribute("aria-hidden") === "true" || current.hasAttribute("hidden")) return true;
       const style = ownerWindow(current).getComputedStyle(current);
       if (style.display === "none" || style.visibility === "hidden") return true;
@@ -493,24 +485,33 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     return "value" in element ? String((element as HTMLInputElement).value ?? "") : "";
   }
 
-  async function expandRepeatedSections(values: Record<string, FieldValue>) {
+  async function expandRepeatedSections(values: Record<string, FieldValue>, clickedAdds: string[]) {
     for (const rule of sectionAddRules) {
       const requested = Math.max(...rule.keys.map((key) => entryCount(values[key])), 0);
       if (requested < 1) continue;
       let current = sectionFieldCount(rule.keys);
       let attempts = 0;
       while (current < requested && attempts < requested) {
-        const button = addSectionControls(rule.keys)[0];
-        if (!button) break;
-        await revealFillTarget(button);
-        await button.click();
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-        const next = sectionFieldCount(rule.keys);
+        const label = addSectionControls(rule.keys)[0];
+        if (!label) break;
+        const trigger = activationTarget(label);
+        activateControl(trigger);
+        clickedAdds.push(cleanLabel(trigger.textContent ?? "") || rule.terms[0]);
+        const next = await waitForSectionGrowth(rule.keys, current);
         if (next <= current) break;
         current = next;
         attempts += 1;
       }
     }
+  }
+
+  function activateControl(element: HTMLElement) {
+    element.dispatchEvent(new CustomEvent("offer-star-activate", { bubbles: true }));
+    if (element.getAttribute("data-offer-star-activated") === "1") {
+      element.removeAttribute("data-offer-star-activated");
+      return;
+    }
+    element.click();
   }
 
   function entryCount(value: FieldValue | undefined) {
@@ -527,8 +528,75 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
       const text = cleanLabel(element.textContent ?? "");
       const matched = sectionAddKeys(text);
       if (!matched || matched.join(",") !== keys.join(",")) return false;
-      if (text.length > 20 || isBlockedActionLabel(text) || !isVisible(element)) return false;
+      if (text.length > 24 || isBlockedActionLabel(text) || !isVisible(element)) return false;
       return !Array.from(element.children).some((child) => sectionAddKeys(cleanLabel(child.textContent ?? ""))?.join(",") === keys.join(","));
+    }).sort((left, right) => Number(right.classList.contains("add_btn")) - Number(left.classList.contains("add_btn")));
+  }
+
+  /** 文案本身往往没有点击逻辑，真正的按钮或点击事件在它的祖先上。 */
+  function activationTarget(element: HTMLElement) {
+    let current: HTMLElement | null = element;
+    let pointerTarget: HTMLElement | null = null;
+    for (let depth = 0; current && depth < 8; current = current.parentElement, depth += 1) {
+      if (current.matches("button, [role=button], a, .ant-btn")) return current;
+      if (typeof current.onclick === "function" || current.hasAttribute("onclick")) return current;
+      const cursor = ownerWindow(current).getComputedStyle(current).cursor;
+      if (cursor === "pointer" && !pointerTarget) pointerTarget = current;
+      if (current.matches("form, #candidateForm, body")) break;
+    }
+    return pointerTarget ?? element;
+  }
+
+  async function waitForSectionGrowth(keys: readonly string[], previous: number) {
+    const pauses = /jsdom/i.test(ownerWindow(document.documentElement).navigator?.userAgent ?? "") ? [0] : [0, 50, 300];
+    let count = previous;
+    for (const pause of pauses) {
+      if (pause) await new Promise<void>((resolve) => setTimeout(resolve, pause));
+      count = sectionFieldCount(keys);
+      if (count > previous) return count;
+    }
+    return count;
+  }
+
+  function clearAddButtonMarks() {
+    document.querySelectorAll<HTMLElement>("[data-offer-star-add-mark]").forEach((element) => {
+      element.style.removeProperty("outline");
+      element.style.removeProperty("outline-offset");
+      element.removeAttribute("data-offer-star-add-mark");
+    });
+  }
+
+  function readClickBinding(element: HTMLElement) {
+    element.dispatchEvent(new CustomEvent("offer-star-inspect-click", { bubbles: true }));
+    const reported = element.getAttribute("data-offer-star-click") ?? "";
+    const where = element.getAttribute("data-offer-star-click-at") ?? "";
+    element.removeAttribute("data-offer-star-click");
+    element.removeAttribute("data-offer-star-click-at");
+    const onclick = reported.split(",").includes("onclick") || typeof element.onclick === "function" || element.hasAttribute("onclick");
+    const parts = reported.split(",").filter(Boolean);
+    const labels = parts.map((part) => part === "vue" ? "Vue click" : part === "react" ? "React onClick" : part === "onclick" ? "onclick" : part === "listener" ? `click 监听（${where || "已挂上"}）` : "").filter(Boolean);
+    if (onclick && !labels.includes("onclick")) labels.unshift("onclick");
+    return { onclick, clickListener: labels.length ? `识别到 ${labels.join("、")}` : "未识别到" };
+  }
+
+  function listAddButtons(): ScanDebugAddButton[] {
+    clearAddButtonMarks();
+    return queryAllDeep<HTMLElement>("button, [role=button], a, div, span").flatMap((element) => {
+      const text = cleanLabel(element.textContent ?? "");
+      const keys = sectionAddKeys(text);
+      if (!keys || text.length > 40) return [];
+      if (Array.from(element.children).some((child) => sectionAddKeys(cleanLabel(child.textContent ?? "")))) return [];
+      const visible = !isEffectivelyHidden(element);
+      const binding = readClickBinding(element);
+      return [{
+        text,
+        tag: element.tagName.toLowerCase(),
+        className: String(element.className || "").slice(0, 80),
+        visible,
+        keys: keys.join(","),
+        onclick: binding.onclick,
+        clickListener: binding.clickListener
+      }];
     });
   }
 
@@ -566,7 +634,6 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
         }
         const previousValue = currentValue(element);
         if (previousValue && !shouldFillExistingValue(mode, previousValue)) continue;
-        await revealFillTarget(element);
         if (await setValue(element, valuesForKey[index])) {
           fillHistory.add({ target: element, value: previousValue });
           filled.push(key);
@@ -591,31 +658,33 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     for (const button of buttons) await button.click();
   }
 
-  async function fill(values: Record<string, FieldValue>, mode: "incremental" | "overwrite") {
+  async function fill(values: Record<string, FieldValue>, mode: "incremental" | "overwrite", options?: { debug?: boolean }) {
     const filled: string[] = [];
     const failed: string[] = [];
     const failureReasons: Record<string, string> = {};
+    const clickedAdds: string[] = [];
     fillHistory.reset();
-    try {
-      await expandRepeatedSections(values);
-      const misses = await writeFields(values, mode, filled, failed, failureReasons);
-      if (misses.length) {
-        await new Promise<void>((resolve) => setTimeout(resolve, 0));
-        await expandRepeatedSections(values);
-        for (const miss of misses) {
-          const index = failed.indexOf(miss);
-          if (index >= 0) failed.splice(index, 1);
-          delete failureReasons[miss];
-        }
-        await writeFields(values, mode, filled, failed, failureReasons, new Set(misses));
-      }
+    await expandRepeatedSections(values, clickedAdds);
+    const misses = await writeFields(values, mode, filled, failed, failureReasons);
+    if (misses.length) {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      await confirmEditedSegments();
-      if (failed.length) console.warn("[Offer Star][Content] 填写失败明细", { 失败数量: failed.length });
-      return { filled, failed, failureReasons };
-    } finally {
-      clearFillHighlight();
+      await expandRepeatedSections(values, clickedAdds);
+      for (const miss of misses) {
+        const index = failed.indexOf(miss);
+        if (index >= 0) failed.splice(index, 1);
+        delete failureReasons[miss];
+      }
+      await writeFields(values, mode, filled, failed, failureReasons, new Set(misses));
     }
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await confirmEditedSegments();
+    if (failed.length) console.warn("[Offer Star][Content] 填写失败明细", { 失败数量: failed.length });
+    return {
+      filled,
+      failed,
+      failureReasons,
+      debug: options?.debug ? { hasCandidateForm: Boolean(document.querySelector("#candidateForm")), addButtons: listAddButtons(), fieldsAfter: scan(), clickedAdds } : undefined
+    };
   }
 
   async function undo() {

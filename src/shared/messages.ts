@@ -107,7 +107,7 @@ export type AiAnalysisResult = {
 
 export type PageCommand =
   | { type: "SCAN_PAGE" }
-  | { type: "FILL_FIELDS"; values: Record<string, FieldValue>; mode: "incremental" | "overwrite" }
+  | { type: "FILL_FIELDS"; values: Record<string, FieldValue>; mode: "incremental" | "overwrite"; debug?: boolean }
   | { type: "UNDO_FILL" }
   | { type: "ADVANCE_FORM_STEP" }
   | { type: "FILL_PHOTO"; dataUrl: string; fileName: string; mimeType: string }
