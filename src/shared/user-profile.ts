@@ -1,10 +1,13 @@
 import type { UserProfile } from "./messages";
+import { normalizeMembershipExpiration } from "./membership";
 
 export function normalizeUserProfile(value: unknown): UserProfile {
   const record = value && typeof value === "object" ? value as Record<string, unknown> : {};
-  const nickname = firstText(record.nickname, record.name, record.account) || "Offer Star 用户";
+  const nickname = firstText(record.nickname, record.name, record.account) || "极速海投用户";
   const avatar = normalizeAvatar(record.avatar);
-  return avatar ? { nickname, avatar } : { nickname };
+  const invitationCode = typeof record.invitationCode === "string" && record.invitationCode.trim().length <= 128 ? record.invitationCode.trim() : undefined;
+  const membershipExpiresAt = normalizeMembershipExpiration(record.offerMemberExpirationTime);
+  return { nickname, ...(avatar ? { avatar } : {}), ...(invitationCode ? { invitationCode } : {}), ...(membershipExpiresAt !== undefined ? { membershipExpiresAt } : {}) };
 }
 
 function firstText(...values: unknown[]) {

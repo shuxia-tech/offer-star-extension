@@ -1,17 +1,54 @@
 {
   "manifest_version": 3,
-  "name": "Offer Star 简历助手",
+  "name": "极速海投",
   "version": "0.1.0",
-  "description": "使用 Offer Star 简历辅助填写招聘网站表单",
-  "action": { "default_title": "打开 Offer Star 简历助手" },
-  "background": { "service_worker": "background.js", "type": "module" },
-  "permissions": ["storage", "activeTab", "scripting"],
-  "host_permissions": ["https://api.gfjianli.com/*"],
+  "description": "极速海投简历助手，辅助填写招聘网站申请表单",
+  "action": {
+    "default_title": "打开极速海投简历助手",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://api.gfjianli.com/*"
+  ],
   "content_scripts": [
     {
-      "matches": ["https://*/*", "http://*/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://*/*",
+        "http://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "icons/icon128.png"
+      ],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ]
     }
   ]
 }

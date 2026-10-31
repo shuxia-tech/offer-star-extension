@@ -21,6 +21,10 @@ import { nextResumeIndex } from "../shared/resume-menu";
 import { hasExtensionTokenChange } from "../shared/storage-change";
 import { buildAiRequestBody, sanitizePageUrl, sanitizeText } from "../shared/privacy";
 import { withRequestTimeout } from "../shared/request-timeout";
+import { readFillStats, type FillStats } from "../shared/fill-stats";
+import { buildInviteLink } from "../shared/invite-link";
+import { getMembershipStatus } from "../shared/membership";
+import type { FloatingFillState } from "../shared/floating-state";
 import { ResumePreview, ResumePreviewSkeleton } from "./resume-preview";
 import { buildScanDebug, ScanDebugPanel, showScanDebug, type ScanDebugReport } from "./scan-debug";
 import "./styles.css";
@@ -29,7 +33,7 @@ import "./styles.css";
 function formatPageOperationError(error: unknown, operation: string) {
   const detail = error instanceof Error ? error.message : String(error ?? "未知错误");
   if (/Receiving end does not exist|Could not establish connection|message port closed/i.test(detail)) {
-    return `当前页面还没有加载 Offer Star 助手，请刷新页面后重新${operation}`;
+    return `当前页面还没有加载极速海投助手，请刷新页面后重新${operation}`;
   }
   if (/Cannot access|not allowed|extensions gallery|chrome:\/\/|edge:\/\/|about:/i.test(detail)) {
     return `当前浏览器页面不允许${operation}，请打开普通网页申请表单后重试`;
@@ -47,11 +51,16 @@ function formatPageAddress(url: string) {
   }
 }
 
-type PanelIconName = "document" | "external" | "upload" | "sparkle";
+type PanelIconName = "document" | "external" | "upload" | "sparkle" | "home" | "support" | "gift" | "edit" | "crown";
 
 /** 使用内嵌 SVG 保持 Chrome、Edge、Firefox 的图标渲染一致，不依赖外部字体。 */
 function PanelIcon({ name, className = "" }: { name: PanelIconName; className?: string }) {
   const paths: Record<PanelIconName, React.ReactNode> = {
+    crown: <><path d="m3 6 5 4 4-6 4 6 5-4-2 12H5L3 6ZM5 21h14" /></>,
+    edit: <><path d="m15 4 5 5M4 20l5-1L21 7a2 2 0 0 0-5-5L4 14l-1 6h1ZM14 21h7" /></>,
+    gift: <><rect x="3" y="8" width="18" height="4" rx="1" /><path d="M5 12v9h14v-9M12 8v13" /><path d="M12 8H8a3 3 0 1 1 3-3l1 3Zm0 0h4a3 3 0 1 0-3-3l-1 3Z" /></>,
+    support: <><path d="M4 14v-3a8 8 0 0 1 16 0v6a4 4 0 0 1-4 4h-4" /><rect x="2" y="10" width="4" height="8" rx="2" /><rect x="18" y="10" width="4" height="8" rx="2" /></>,
+    home: <><path d="m3 10 9-7 9 7v11H3V10Z" /><path d="M9 21v-8h6v8" /></>,
     document: <><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M8 8h8M8 12h8M8 16h5" /></>,
     external: <><path d="M13 5h6v6" /><path d="m19 5-8 8" /><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5" /></>,
     upload: <><path d="M12 16V4" /><path d="m7 9 5-5 5 5" /><path d="M5 20h14" /></>,
@@ -105,6 +114,46 @@ function App() {
   const [panelTab, setPanelTab] = useState<"fill" | "preview" | "scan">("fill");
   const [scanDebug, setScanDebug] = useState<ScanDebugReport | null>(null);
   const [minutesSaved, setMinutesSaved] = useState(0);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [supportOpen, setSupportOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteFeedback, setInviteFeedback] = useState("");
+  const [fillStats, setFillStats] = useState<FillStats | null>(null);
+  const [statsError, setStatsError] = useState("");
+  const [previewFeedback,setPreviewFeedback]=useState("");
+  const previewFillPending=useRef(false);
+  const [panelReady, setPanelReady] = useState(false);
+  const [resumeListFailed, setResumeListFailed] = useState(false);
+  const [dockState, setDockState] = useState<FloatingFillState>("loading");
+  const autofillBusyRef = useRef(false);
+  const quickFillRef = useRef(() => { void autofillPage(); });
+  quickFillRef.current = () => { void autofillPage(); };
+  const extensionVersion = browser.runtime.getManifest().version;
+
+  useEffect(() => {
+    // 网页能向 iframe 发 postMessage，因此填写命令只接受扩展内部通信和绑定标签页。
+    const onQuickFill = (command: ExtensionMessage, sender: { id?: string; tab?: { id?: number } }) => {
+      if (command.type !== "FLOATING_FILL_COMMAND" || command.action !== "start") return;
+      if (!embedded || sender.id !== browser.runtime.id || sender.tab?.id !== fallbackTabId) return;
+      quickFillRef.current();
+    };
+    browser.runtime.onMessage.addListener(onQuickFill);
+    return () => browser.runtime.onMessage.removeListener(onQuickFill);
+  }, []);
+
+  useEffect(() => {
+    if (!embedded) return;
+    window.parent.postMessage({ type: "OFFER_STAR_DOCK_STATE", state: dockState }, "*");
+  }, [dockState]);
+
+  useEffect(() => {
+    if (!panelReady || !embedded) return;
+    window.parent.postMessage({ type: "OFFER_STAR_PANEL_READY" }, "*");
+  }, [panelReady]);
+
+  useEffect(() => {
+    if (panelReady && !autofillBusyRef.current) setDockState(authState === "signed-out" ? "login" : resumeListFailed ? "error" : resumes.length ? "idle" : "missing");
+  }, [panelReady, authState, resumes.length, resumeListFailed]);
   const fieldOptions: Array<[FieldKey, string]> = [
     ["name", "姓名"], ["phone", "手机号"], ["email", "邮箱"], ["city", "城市"], ["targetCity", "期望城市"],
     ["age", "年龄"], ["gender", "性别"], ["currentStatus", "求职状态"], ["targetSalary", "期望薪资"], ["wechat", "微信"],
@@ -119,7 +168,35 @@ function App() {
   }, [photoData]);
 
   useEffect(() => {
+    if (!helpOpen && !supportOpen && !inviteOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { setHelpOpen(false); setSupportOpen(false); setInviteOpen(false); }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [helpOpen, supportOpen, inviteOpen]);
+
+  useEffect(() => {
+    const refreshStats = () => {
+      void withRequestTimeout(browser.runtime.sendMessage({ type: "GET_FILL_STATS" } satisfies ExtensionMessage), 5000, "填写统计读取超时").then((result) => {
+        if (result?.error) throw new Error(result.error);
+        setFillStats(readFillStats(result));
+        setStatsError("");
+      }).catch(() => setStatsError("填写统计暂时无法读取，请稍后重试"));
+    };
+    const onStatsChanged = (changes: Record<string, { newValue?: unknown }>, area: string) => {
+      if (area === "local" && changes.fillStats) setFillStats(readFillStats(changes.fillStats.newValue));
+    };
+    refreshStats();
+    const timer = window.setInterval(refreshStats, 60_000);
+    window.addEventListener("focus", refreshStats);
+    browser.storage.onChanged.addListener(onStatsChanged);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", refreshStats); browser.storage.onChanged.removeListener(onStatsChanged); };
+  }, []);
+
+  useEffect(() => {
     authStateRef.current = authState;
+    if (authState !== "signed-in") { setInviteOpen(false); setInviteFeedback(""); }
   }, [authState]);
 
   useEffect(() => {
@@ -180,7 +257,7 @@ function App() {
   }
 
   useEffect(() => {
-    void loadResumeList();
+    void loadResumeList().finally(() => setPanelReady(true));
     const resetSignedOutSession = () => {
       resumeListRequestRef.current += 1;
       resumeProfileRequestRef.current += 1;
@@ -281,6 +358,7 @@ function App() {
 
   async function loadResumeList() {
     const requestId = ++resumeListRequestRef.current;
+    setResumeListFailed(false);
     authStateRef.current = "checking";
     setAuthState("checking");
     setUserProfile(null);
@@ -324,11 +402,12 @@ function App() {
         await browser.storage.local.set({ selectedResumeId: preferredId });
         await loadResumeProfile(preferredId);
       } else {
-        setMessage("还没有可用简历，请先在 Offer Star 创建一份简历");
+        setMessage("还没有可用简历，请先在极速海投创建一份简历");
       }
     } catch (error) {
       if (requestId !== resumeListRequestRef.current) return;
       console.error("[Offer Star][FloatingPanel] 简历列表加载失败", error);
+      setResumeListFailed(true);
       const latestSession = await withRequestTimeout(browser.storage.local.get("extensionToken"), 3000, "无法读取登录状态").catch(() => ({} as { extensionToken?: unknown }));
       if (requestId !== resumeListRequestRef.current) return;
       if (hasStoredSession && latestSession.extensionToken) {
@@ -360,7 +439,7 @@ function App() {
     setAuthState("signed-out");
     setResume(cleared.resume);
     setSelectedResumeId(cleared.selectedResumeId);
-    setMessage("已退出扩展登录，请重新登录 Offer Star");
+    setMessage("已退出扩展登录，请重新登录极速海投");
     console.info("[Offer Star][FloatingPanel] 用户退出扩展登录");
   }
 
@@ -426,19 +505,29 @@ function App() {
   }
 
   async function autofillPage() {
+    if (autofillBusyRef.current) return;
+    autofillBusyRef.current = true;
+    setDockState("loading");
+    try { await runAutofillPage(); }
+    finally { autofillBusyRef.current = false; }
+  }
+
+  async function runAutofillPage() {
     if (authState !== "signed-in") {
+      setDockState("login");
       await openOfferStarLogin();
       return;
     }
     const decision = decideAutofillResume(resumes, selectedResumeId, Boolean(resume));
     if (decision.type === "missing") {
+      setDockState("missing");
       setPanelTab("preview");
-      setMessage("还没有可用简历，请先在 Offer Star 创建一份简历");
+      setMessage("还没有可用简历，请先在极速海投创建一份简历");
       return;
     }
     if (decision.reload) setMessage("正在读取简历…");
     const profile = decision.reload ? await loadResumeProfile(decision.resumeId) : resume;
-    if (!profile) return;
+    if (!profile) { setDockState("error"); return; }
     console.info("[Offer Star][FloatingPanel] 用户点击自动填充");
     const generation = autofillGenerationRef.current + 1;
     autofillGenerationRef.current = generation;
@@ -449,9 +538,11 @@ function App() {
     setMessage("正在识别并填写当前页面…");
     try {
       const tab = await getTargetTab();
-      if (!tab.id) { setPhase("ready"); setMessage("无法访问当前页面"); return; }
+      if (!tab.id) { setDockState("error"); setPhase("ready"); setMessage("无法访问当前页面"); return; }
+      setDockState("scanning");
       const scan = await sendToPage(tab.id, { type: "SCAN_PAGE" });
       if (scan?.blockedReason) {
+        setDockState("blocked");
         setPhase("ready");
         setSecurityBlocked(true);
         setMessage(scan.blockedReason);
@@ -465,6 +556,7 @@ function App() {
       const values = valuesForAutofill(buildResumeFieldValues(profile, draftOverrides), scanned);
       const recognized = scanned.filter((field) => field.key).length;
       const hasResumeValue = Object.values(values).some((value) => Array.isArray(value) ? value.some((item) => String(item).trim()) : String(value ?? "").trim());
+      setDockState("filling");
       const result = await sendToPage(tab.id, { type: "FILL_FIELDS", values, mode: "incremental", debug: showScanDebug });
       if (showScanDebug) {
         setScanDebug(buildScanDebug({
@@ -477,7 +569,9 @@ function App() {
         setPanelTab("scan");
       }
       const filledCount = result?.filled?.length ?? 0;
+      await recordFillCount(filledCount);
       const failedCount = (result?.failed ?? []).length;
+      setDockState(filledCount > 0 ? "success" : failedCount > 0 ? "error" : "empty");
       const metricStore = await browser.storage.local.get("siteMetrics");
       const nextMetrics = recordSiteFillMetric((metricStore.siteMetrics ?? {}) as SiteMetrics, adapter.id, filledCount, failedCount);
       await browser.storage.local.set({ siteMetrics: nextMetrics });
@@ -500,6 +594,7 @@ function App() {
       }
       console.info("[Offer Star][FloatingPanel] 自动填充完成", { 成功数量: filledCount, 失败数量: failedCount });
     } catch (error) {
+      setDockState("error");
       setPhase("ready");
       setMessage(formatPageOperationError(error, "自动填充"));
       console.error("[Offer Star][FloatingPanel] 自动填充失败", error);
@@ -580,6 +675,7 @@ function App() {
       if (!resume) { setPhase("review"); setMessage("请先选择一份简历"); return; }
       const values = valuesForAutofill(buildResumeFieldValues(resume, draftOverrides), fields);
       const result = await sendToPage(tab.id, { type: "FILL_FIELDS", values, mode: fillMode });
+      await recordFillCount(result?.filled?.length ?? 0);
       setPhase("done");
       const failed = (result?.failed ?? []) as string[];
       const failureReasons = (result?.failureReasons ?? {}) as Record<string, string>;
@@ -711,6 +807,24 @@ function App() {
     }
   }
 
+  async function copyPreviewValue(value: string) {
+    try { await navigator.clipboard.writeText(value);setPreviewFeedback("已复制，可粘贴到网页输入框"); }
+    catch { setPreviewFeedback("浏览器暂不允许复制，请选中文字后手动复制"); }
+  }
+  async function fillPreviewValue(value: string) {
+    if(previewFillPending.current)return;
+    previewFillPending.current=true;
+    try {
+      const tab=await getTargetTab();
+      if(!tab?.id){setPreviewFeedback("无法连接网页，请刷新申请页面后重试");return;}
+      const result=await withRequestTimeout(sendToPage(tab.id,{type:"FILL_FOCUSED_TEXT",value}),8000,"填写超时，请重新选择输入框后重试");
+      if(!result?.filled){setPreviewFeedback(result?.error||"未能填入，请先选择网页中的文字输入框");return;}
+      setPreviewFeedback(result.changed===false?"输入框中已是这项内容，无需重复填写":"已填入选中的输入框，请核对内容");
+      if(result.changed!==false)await recordFillCount(1);
+    }catch(error){setPreviewFeedback(formatPageOperationError(error,"填入文字"));}
+    finally{previewFillPending.current=false;}
+  }
+
   async function copyFailureReport() {
     if (!failureReport) return;
     const text = stringifyFailureReport(failureReport);
@@ -720,6 +834,37 @@ function App() {
     } catch (error) {
       console.error("[Offer Star][FloatingPanel] 复制诊断报告失败", error);
       setMessage("浏览器禁止自动复制，请打开开发者工具查看日志");
+    }
+  }
+
+  async function recordFillCount(filledCount: number) {
+    if (filledCount <= 0) return;
+    try {
+      const result = await withRequestTimeout(browser.runtime.sendMessage({ type: "RECORD_SUCCESSFUL_FILL", filledCount } satisfies ExtensionMessage), 8000, "填写统计更新超时，请重新打开面板核对");
+      if (result?.error) throw new Error(result.error);
+      setFillStats(readFillStats(result));
+      setStatsError("");
+    } catch {
+      setStatsError("填写已完成，但统计暂未更新，请重新打开面板核对");
+    }
+  }
+
+  function openInvite() {
+    if (authState !== "signed-in") { void openOfferStarLogin(); return; }
+    setHelpOpen(false);
+    setSupportOpen(false);
+    setInviteFeedback("");
+    setInviteOpen(true);
+  }
+
+  async function copyInviteLink() {
+    const link = buildInviteLink(userProfile?.invitationCode);
+    if (!link) return;
+    try {
+      await navigator.clipboard.writeText(link);
+      setInviteFeedback("邀请链接已复制，分享给好友吧");
+    } catch {
+      setInviteFeedback("无法自动复制，请选中上方链接手动复制");
     }
   }
 
@@ -748,19 +893,37 @@ function App() {
   }
 
   const selectedResume = resumes.find((item) => item.id === selectedResumeId);
-  const userInitial = (userProfile?.nickname || "Offer Star").slice(0, 1).toUpperCase();
+  const userInitial = (userProfile?.nickname || "极速海投").slice(0, 1).toUpperCase();
+  const inviteLink = authState === "signed-in" ? buildInviteLink(userProfile?.invitationCode) : null;
+  const membership = getMembershipStatus(userProfile?.membershipExpiresAt);
+  const membershipLabel = membership === "lifetime" ? "永久会员" : membership === "vip" ? "VIP会员" : membership === "free" ? "免费版" : "会员待确认";
 
   return <main className="offer-star-panel">
-    <header className="panel-header">
-      <div className="brand-lockup"><div className="brand-mark">★</div><div><h2>Offer Star</h2><span>简历填写助手</span></div></div>
+    <header className="panel-header" tabIndex={embedded ? 0 : undefined} aria-label={embedded ? "移动插件面板，方向键调整位置" : undefined} title={embedded ? "按住顶部空白处拖动；聚焦后可用方向键移动" : undefined}
+      onPointerDown={(event) => {
+        if (!embedded || !event.isTrusted || event.button !== 0 || (event.target as Element).closest("button, a, input, select")) return;
+        event.preventDefault();
+        window.parent.postMessage({ type: "OFFER_STAR_PANEL_DRAG", stage: "start", x: event.screenX, y: event.screenY }, "*");
+      }}
+      onKeyDown={(event) => {
+        if (!embedded || event.target !== event.currentTarget || !event.key.startsWith("Arrow")) return;
+        event.preventDefault();
+        window.parent.postMessage({ type: "OFFER_STAR_PANEL_NUDGE", dx: event.key === "ArrowLeft" ? -10 : event.key === "ArrowRight" ? 10 : 0, dy: event.key === "ArrowUp" ? -10 : event.key === "ArrowDown" ? 10 : 0 }, "*");
+      }}>
+      <div className="brand-lockup"><div className="brand-mark"><img src="/icons/icon128.png" alt="" /></div><div><h2>极速海投</h2><span>简历填写助手</span></div></div>
+      {authState === "signed-in" ? <section className="header-account" aria-label="当前登录用户">
+        {userProfile?.avatar && !avatarFailed ? <img className="account-avatar" src={userProfile.avatar} alt="" onError={() => setAvatarFailed(true)} /> : <span className="account-avatar account-avatar-fallback">{userInitial}</span>}
+        <span className="account-copy"><strong title={userProfile?.nickname}>{userProfile?.nickname || "已登录"}</strong><a className={`membership-badge membership-${membership}`} href="https://offer.gfjianli.com/" target="_blank" rel="noopener noreferrer" title={membership === "free" ? "前往官网开通会员" : membership === "unknown" ? "会员信息暂未获取，可前往官网确认" : "前往官网查看会员详情"}>{membership === "vip" || membership === "lifetime" ? <PanelIcon name="crown" /> : null}{membershipLabel}</a></span>
+        <button className="account-action account-logout" type="button" onClick={() => void clearExtensionToken()}>退出</button>
+      </section> : null}
       {embedded ? <button className="panel-close-button" type="button" aria-label="关闭悬浮面板" onClick={() => window.parent.postMessage({ type: "OFFER_STAR_CLOSE_FLOATING_PANEL" }, "*")}>×</button> : null}
     </header>
 
-    {authState === "signed-in" ? <section className="account-strip" aria-label="当前登录用户">
-      {userProfile?.avatar && !avatarFailed ? <img className="account-avatar" src={userProfile.avatar} alt="" onError={() => setAvatarFailed(true)} /> : <span className="account-avatar account-avatar-fallback">{userInitial}</span>}
-      <span className="account-copy"><strong>{userProfile?.nickname || "已登录 Offer Star"}</strong><small>账号已连接</small></span>
-      <button className="account-action account-logout" type="button" onClick={() => void clearExtensionToken()}>退出</button>
-    </section> : null}
+    <section className="application-stats" aria-label="填写统计">
+      <div className="application-stat"><span>今日填写</span><strong>{fillStats?.today ?? "—"}</strong></div>
+      <div className="application-stat"><span>累计填写</span><strong>{fillStats?.total ?? "—"}<small>次</small></strong></div>
+      {statsError ? <p className="stats-error" role="status">{statsError}</p> : null}
+    </section>
 
     <div className={`panel-tabs${showScanDebug ? " panel-tabs-debug" : ""}`} role="tablist" aria-label="插件功能">
       <button type="button" role="tab" aria-selected={panelTab === "fill"} className={panelTab === "fill" ? "tab-active" : ""} onClick={() => setPanelTab("fill")}>自动填充</button>
@@ -770,13 +933,13 @@ function App() {
 
     {message ? <div className={`status-banner status-${phase}${securityBlocked ? " status-security" : ""}`} role="status" aria-live="polite" aria-atomic="true">{message}</div> : null}
 
-    {panelTab === "scan" && showScanDebug ? <ScanDebugPanel report={scanDebug} /> : panelTab === "fill" ? <section className="smart-fill">
-      <h3>智能表单填充</h3>
-      <p>识别当前页面的表单并自动填写。</p>
+    {panelTab === "scan" && showScanDebug ? <ScanDebugPanel report={scanDebug} /> : panelTab === "fill" ? <section className="smart-fill" aria-label="智能表单填充">
       <div className={`fill-hero${phase === "filling" ? " fill-hero-busy" : ""}`}>
-        <div className="fill-hero-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" /></svg></div>
-        <strong>自动填充此职位申请</strong>
-        <span>到目前为止，您已通过自动填充节省了 {minutesSaved} 分钟 🔥</span>
+        <div className="fill-hero-heading">
+          <div className="fill-hero-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" /></svg></div>
+          <div><strong>自动填充此职位申请</strong><p>匹配简历内容，减少重复输入</p></div>
+        </div>
+        <div className="fill-benefits"><span>已累计节省 <strong>{minutesSaved} 分钟</strong></span><span>填写后请核对</span></div>
         <button className={`fill-submit${phase === "filling" ? " fill-submit-busy" : ""}`} type="button" aria-busy={phase === "filling"} onClick={() => void (authState === "signed-in" ? autofillPage() : openOfferStarLogin())} disabled={phase === "filling" || loginPending || authState === "checking"}>
           {phase === "filling" ? <span className="fill-spinner" aria-hidden="true" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" /></svg>}
           {phase === "filling" ? "正在填写…" : authState === "signed-in" ? "自动填充此页面" : loginPending ? "正在打开…" : "微信扫码登录"}
@@ -784,7 +947,9 @@ function App() {
         {authState !== "signed-in" && authState !== "checking" ? <button className="fill-refresh" type="button" onClick={() => void refreshWebsiteLogin()}>我已登录</button> : null}
       </div>
     </section> : <section className="resume-card" aria-busy={authState === "checking"}>
-      <div className="section-heading"><strong>使用哪份简历</strong></div>
+      <aside className="preview-fill-guide" aria-label="快捷填写说明"><span className="preview-guide-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="6" width="12" height="16" rx="6"/><path d="M12 6v5M12 1v2M5 3l2 2m12-2-2 2"/></svg></span><div><strong>单击复制，双击填入</strong><p>选中网页输入框，再双击下方信息</p></div></aside>
+      {previewFeedback?<p className="preview-feedback" role="status">{previewFeedback}</p>:null}
+      <div className="section-heading preview-heading"><strong>使用哪份简历</strong><a className="resume-edit-link" href="https://gfjianli.com/" target="_blank" rel="noopener noreferrer"><PanelIcon name="edit" />修改简历</a></div>
       {authState === "checking" ? <div className="resume-loading" role="status" aria-label="正在加载简历"><div className="loading-copy"><strong>正在读取简历</strong><span>请稍候</span></div><span className="loading-bar" /></div> : null}
       {authState === "checking" ? null : resumes.length ? <div className="resume-picker" ref={resumePickerRef}>
         <button type="button" className="resume-picker-trigger" aria-expanded={resumeMenuOpen} aria-haspopup="listbox" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setResumeMenuOpen(false); } else if (event.key === "ArrowDown") { event.preventDefault(); setResumeMenuOpen(true); setResumeFocusIndex(0); } else if (event.key === "ArrowUp") { event.preventDefault(); setResumeMenuOpen(true); setResumeFocusIndex(Math.max(0, resumes.length - 1)); } }} onClick={() => setResumeMenuOpen((open) => !open)}>
@@ -802,9 +967,46 @@ function App() {
           <button onClick={() => void refreshWebsiteLogin()}>我已登录</button>
         </div>
       </>}
-      {resume ? <ResumePreview resume={resume} /> : selectedResumeId && authState === "signed-in" ? <ResumePreviewSkeleton /> : null}
+      {resume ? <ResumePreview resume={resume} actions={{copy:(value)=>void copyPreviewValue(value),fill:(value)=>void fillPreviewValue(value)}} /> : selectedResumeId && authState === "signed-in" ? <ResumePreviewSkeleton /> : null}
       {authState === "signed-in" ? <button className="button-primary preview-manage" type="button" onClick={() => void openOfferStarResume()}>管理简历</button> : null}
     </section>}
+    <div className="panel-bottom">
+      <section className="invite-banner" aria-label="邀请好友">
+        <span className="invite-gift" aria-hidden="true"><PanelIcon name="gift" /></span>
+        <p>每邀请 1 位好友，<br />你和好友各得 <strong>1 天 VIP</strong></p>
+        <button type="button" className="invite-button" disabled={authState === "checking" || loginPending} onClick={openInvite}>马上邀请</button>
+      </section>
+      <footer className="panel-footer">
+      {inviteOpen && authState === "signed-in" ? <section className="footer-help invite-share" aria-label="分享邀请链接">
+        <div className="footer-help-heading"><h3>邀请好友，双方有礼</h3><button type="button" aria-label="关闭邀请" onClick={() => setInviteOpen(false)}>×</button></div>
+        {inviteLink ? <><p>每成功邀请 1 位好友，双方各得 1 天 VIP。</p><input aria-label="邀请链接" readOnly value={inviteLink} onFocus={(event) => event.currentTarget.select()} /><button type="button" className="invite-copy" onClick={() => void copyInviteLink()}>复制邀请链接</button></> : <><p>暂未获取到邀请链接，请前往官网点击“邀请好友”获取。</p><a href="https://offer.gfjianli.com/" target="_blank" rel="noopener noreferrer">前往官网获取邀请链接<PanelIcon name="external" /></a></>}
+        {inviteFeedback ? <p role="status">{inviteFeedback}</p> : null}
+      </section> : null}
+      {supportOpen ? <section className="footer-help footer-support" id="panel-support" aria-label="联系客服">
+        <div className="footer-help-heading"><h3>联系客服</h3><button type="button" aria-label="关闭客服" onClick={() => setSupportOpen(false)}>×</button></div>
+        <div className="support-qr-placeholder"><PanelIcon name="support" /><span>客服二维码即将上线</span></div>
+        <p>上线后可扫码联系客服，敬请期待。</p>
+      </section> : null}
+      {helpOpen ? <section className="footer-help" id="panel-help" aria-label="使用帮助">
+        <div className="footer-help-heading"><h3>使用帮助</h3><button type="button" aria-label="关闭使用帮助" onClick={() => setHelpOpen(false)}>×</button></div>
+        <ol>
+          <li>微信扫码登录，创建并完善简历。</li>
+          <li>打开招聘网站申请表，点击“自动填充此页面”。</li>
+          <li>核对填写结果，确认附件后手动提交申请。</li>
+        </ol>
+        <p>页面未出现助手时，请刷新网页；遇到验证码请先手动完成。</p>
+      </section> : null}
+      <nav className="footer-links" aria-label="官网与校招入口">
+        <a className="campus-jobs-link" href="https://offer.gfjianli.com/" target="_blank" rel="noopener noreferrer" title="访问官网（新标签页）"><PanelIcon name="home" />访问官网</a>
+        <a className="campus-jobs-link" href="https://offer.gfjianli.com/" target="_blank" rel="noopener noreferrer" title="打开校招信息汇总（新标签页）"><PanelIcon name="document" />校招信息汇总</a>
+      </nav>
+      <span className="footer-version" aria-label={`当前版本 ${extensionVersion}`}>v{extensionVersion}版本</span>
+      <div className="footer-actions">
+        <button className="footer-action" type="button" aria-expanded={supportOpen} aria-controls="panel-support" onClick={() => { setHelpOpen(false); setInviteOpen(false); setSupportOpen((open) => !open); }}>客服</button>
+        <button className="footer-action" type="button" aria-expanded={helpOpen} aria-controls="panel-help" onClick={() => { setSupportOpen(false); setInviteOpen(false); setHelpOpen((open) => !open); }}>帮助</button>
+      </div>
+    </footer>
+    </div>
   </main>;
 }
 

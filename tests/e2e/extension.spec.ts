@@ -42,22 +42,22 @@ test("扩展会在测试页面注入网页悬浮入口", async () => {
   await page.goto("http://127.0.0.1:4173/");
   await page.waitForTimeout(1000);
   await expect(page.locator("#offer-star-floating-launcher")).toBeVisible();
-  await expect(page.locator("#offer-star-floating-launcher")).toHaveAttribute("title", "打开 Offer Star 简历助手");
+  await expect(page.locator("#offer-star-floating-launcher")).toHaveAttribute("title", "打开极速海投简历助手");
   await expect(page.locator("#offer-star-floating-launcher")).toHaveAttribute("aria-controls", "offer-star-floating-panel");
-  await expect(page.getByRole("button", { name: "打开 Offer Star 简历助手" })).toBeVisible();
-  await page.getByRole("button", { name: "打开 Offer Star 简历助手" }).click();
+  await expect(page.getByRole("button", { name: "打开极速海投简历助手" })).toBeVisible();
+  await page.getByRole("button", { name: "打开极速海投简历助手" }).click();
   await expect(page.locator("#offer-star-floating-panel")).toBeVisible();
   await expect(page.locator("#offer-star-floating-panel")).toHaveAttribute("aria-modal", "false");
   await expect(page.locator("#offer-star-floating-launcher")).toBeHidden();
-  await expect(page.locator("#offer-star-floating-panel iframe")).toHaveAttribute("title", "Offer Star 简历助手悬浮面板");
+  await expect(page.locator("#offer-star-floating-panel iframe")).toHaveAttribute("title", "极速海投简历助手悬浮面板");
   const panel = page.frameLocator("#offer-star-floating-panel iframe");
-  await expect(panel.locator("h2")).toHaveText("Offer Star");
+  await expect(panel.locator("h2")).toHaveText("极速海投");
   await expect(panel.locator("section.resume-card")).toHaveAttribute("aria-busy", "false");
   await expect(panel.locator("h2")).toHaveCSS("white-space", "nowrap");
   await expect.poll(() => panel.locator("h2").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
-  await expect(panel.locator(".brand-mark")).toHaveText("★");
+  await expect(panel.locator(".brand-mark")).toHaveText("");
   await expect(panel.locator("svg.panel-icon").first()).toBeVisible();
-  await expect(panel.locator(".brand-mark")).toHaveCSS("border-radius", "10px");
+  await expect(panel.locator(".brand-mark")).toHaveCSS("border-radius", "8px");
   await expect(panel.locator(".status-banner")).toBeVisible();
   await expect(panel.locator(".status-banner")).toHaveCSS("border-radius", "10px");
   await expect(panel.getByRole("button", { name: "扫描当前页面" })).toBeVisible();
@@ -75,7 +75,7 @@ test("扩展会在测试页面注入网页悬浮入口", async () => {
   await expect(page.locator("#offer-star-floating-panel")).toHaveCount(0);
   await expect(page.locator("#offer-star-floating-launcher")).toBeVisible();
   await page.setViewportSize({ width: 320, height: 900 });
-  await page.getByRole("button", { name: "打开 Offer Star 简历助手" }).click();
+  await page.getByRole("button", { name: "打开极速海投简历助手" }).click();
   const compactPanel = page.frameLocator("#offer-star-floating-panel iframe");
   await expect(compactPanel.locator("h2")).toHaveCSS("white-space", "nowrap");
   await expect.poll(() => compactPanel.locator("h2").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
@@ -91,16 +91,16 @@ test("未登录时点击登录按钮会打开 Offer Star 官网", async () => {
     "当前 Playwright 无头运行时未加载扩展 service worker，需要使用带界面的 Chromium 或手动加载扩展验证"
   );
   await page.goto("http://127.0.0.1:4173/");
-  await page.getByRole("button", { name: "打开 Offer Star 简历助手" }).click();
+  await page.getByRole("button", { name: "打开极速海投简历助手" }).click();
   const panel = page.frameLocator("#offer-star-floating-panel iframe");
   await expect(panel.getByText("未登录")).toBeVisible();
   await expect(panel.locator("section.resume-card").getByText("请先登录并创建简历", { exact: true })).toBeVisible();
-  await expect(panel.getByRole("button", { name: "打开 Offer Star 登录" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "打开极速海投登录" })).toBeVisible();
   await expect(panel.getByRole("button", { name: "刷新登录状态" })).toBeVisible();
   await panel.getByRole("button", { name: "刷新登录状态" }).click();
-  await expect(panel.locator(".status-banner")).toContainText("未找到同一浏览器中的 Offer Star 官网");
+  await expect(panel.locator(".status-banner")).toContainText("未找到同一浏览器中的极速海投官网");
   const before = new Set(context.pages());
-  await panel.getByRole("button", { name: "打开 Offer Star 登录" }).click();
+  await panel.getByRole("button", { name: "打开极速海投登录" }).click();
   await expect.poll(() => context.pages().filter((candidate) => !before.has(candidate)).length).toBe(1);
   const loginPage = context.pages().find((candidate) => !before.has(candidate));
   expect(loginPage).toBeTruthy();
@@ -115,7 +115,7 @@ test("安全验证页面不会进入字段填写流程", async () => {
     "当前 Playwright 无头运行时未加载扩展 service worker，需要使用带界面的 Chromium 或手动加载扩展验证"
   );
   await page.goto("http://127.0.0.1:4173/?_security_check=1");
-  await page.getByRole("button", { name: "打开 Offer Star 简历助手" }).click();
+  await page.getByRole("button", { name: "打开极速海投简历助手" }).click();
   const panel = page.frameLocator("#offer-star-floating-panel iframe");
   await panel.getByRole("button", { name: "扫描当前页面" }).click();
   await expect(panel.getByRole("status").filter({ hasText: "安全验证" })).toHaveClass(/status-security/);
@@ -130,7 +130,7 @@ test("空扫描结果会显示重新扫描入口", async () => {
     "当前 Playwright 无头运行时未加载扩展 service worker，需要使用带界面的 Chromium 或手动加载扩展验证"
   );
   await page.goto("http://127.0.0.1:4173/empty.html");
-  await page.getByRole("button", { name: "打开 Offer Star 简历助手" }).click();
+  await page.getByRole("button", { name: "打开极速海投简历助手" }).click();
   const panel = page.frameLocator("#offer-star-floating-panel iframe");
   await panel.getByRole("button", { name: "扫描当前页面" }).click();
   await expect(panel.locator(".empty-scan-card")).toBeVisible();
@@ -238,7 +238,7 @@ test("表单结构异步变化后网页内悬浮面板收到过期提示", async
     "当前 Playwright 无头运行时未加载扩展 service worker，需要使用带界面的 Chromium 或手动加载扩展验证"
   );
   await page.goto("http://127.0.0.1:4173/");
-  await page.getByRole("button", { name: "打开 Offer Star 简历助手" }).click();
+  await page.getByRole("button", { name: "打开极速海投简历助手" }).click();
   const floatingPanel = page.frameLocator("#offer-star-floating-panel iframe");
   await floatingPanel.getByRole("button", { name: "扫描当前页面" }).click();
   await expect(floatingPanel.getByText(/识别到 \d+ 个字段/)).toBeVisible();
@@ -307,7 +307,7 @@ test("登录态可以从缓存加载简历并完成一键填写", async () => {
     });
   });
   await page.goto("http://127.0.0.1:4173/simple.html");
-  await page.getByRole("button", { name: "打开 Offer Star 简历助手" }).click();
+  await page.getByRole("button", { name: "打开极速海投简历助手" }).click();
   const panel = page.frameLocator("#offer-star-floating-panel iframe");
   await expect(panel.getByText("已连接")).toBeVisible();
   await expect(panel.getByText("E2E 测试简历")).toBeVisible();
@@ -346,7 +346,7 @@ test("登录态可以从缓存加载简历并完成一键填写", async () => {
   await expect(panel.getByRole("button", { name: "全部覆盖重填" })).toHaveClass(/segment-active/);
   await panel.getByRole("button", { name: "关闭悬浮面板" }).click();
   await expect(page.locator("#offer-star-floating-panel")).toHaveCount(0);
-  await page.getByRole("button", { name: "打开 Offer Star 简历助手" }).click();
+  await page.getByRole("button", { name: "打开极速海投简历助手" }).click();
   const reopenedPanel = page.frameLocator("#offer-star-floating-panel iframe");
   await reopenedPanel.getByRole("button", { name: "扫描当前页面" }).click();
   await reopenedPanel.getByRole("button", { name: "查看匹配结果" }).click();
@@ -379,7 +379,7 @@ test("登录态失效时会清空悬浮面板中的旧简历", async () => {
     });
   });
   await page.goto("http://127.0.0.1:4173/simple.html");
-  await page.getByRole("button", { name: "打开 Offer Star 简历助手" }).click();
+  await page.getByRole("button", { name: "打开极速海投简历助手" }).click();
   const panel = page.frameLocator("#offer-star-floating-panel iframe");
   await expect(panel.getByText("退出登录测试简历")).toBeVisible();
   await serviceWorker.evaluate(async () => chrome.storage.local.remove("extensionToken"));
@@ -402,7 +402,7 @@ test("简历服务无响应时退出登录检查并允许刷新重试", async ()
   });
   try {
     await page.goto("http://127.0.0.1:4173/simple.html");
-    await page.getByRole("button", { name: "打开 Offer Star 简历助手" }).click();
+    await page.getByRole("button", { name: "打开极速海投简历助手" }).click();
     const panel = page.frameLocator("#offer-star-floating-panel iframe");
     await expect(panel.getByText("正在检查登录状态")).toBeVisible();
     await expect(panel.locator(".status-banner")).toContainText("简历服务响应超时", { timeout: 18000 });
@@ -412,7 +412,7 @@ test("简历服务无响应时退出登录检查并允许刷新重试", async ()
     });
     // 此夹具没有官网授权页，重新打开面板只重试简历请求，不触发官网重同步。
     await panel.getByRole("button", { name: "关闭悬浮面板" }).click();
-    await page.getByRole("button", { name: "打开 Offer Star 简历助手" }).click();
+    await page.getByRole("button", { name: "打开极速海投简历助手" }).click();
     await expect(panel.locator(".status-banner")).toContainText("还没有可用简历");
   } finally {
     await worker.evaluate(async () => {
@@ -444,7 +444,7 @@ test("官网持久化登录可自动同步且支持相同凭证显式重连", as
       return Boolean(stored.extensionToken);
     })).toBe(true);
     await page.goto("http://127.0.0.1:4173/simple.html");
-    await page.getByRole("button", { name: "打开 Offer Star 简历助手" }).click();
+    await page.getByRole("button", { name: "打开极速海投简历助手" }).click();
     const panel = page.frameLocator("#offer-star-floating-panel iframe");
     await expect(panel.getByText("已连接", { exact: true })).toBeVisible();
     await worker.evaluate(async () => chrome.storage.local.remove("extensionToken"));
@@ -472,10 +472,10 @@ test("业务401清理旧授权和缓存，不把过期登录当作已连接", as
   });
   try {
     await page.goto("http://127.0.0.1:4173/simple.html");
-    await page.getByRole("button", { name: "打开 Offer Star 简历助手" }).click();
+    await page.getByRole("button", { name: "打开极速海投简历助手" }).click();
     const panel = page.frameLocator("#offer-star-floating-panel iframe");
     await expect(panel.getByText("未登录", { exact: true })).toBeVisible();
-    await expect(panel.getByRole("button", { name: "打开 Offer Star 登录" })).toBeVisible();
+    await expect(panel.getByRole("button", { name: "打开极速海投登录" })).toBeVisible();
     await expect(panel.getByText("过期缓存简历")).toHaveCount(0);
     expect(await worker.evaluate(async () => {
       const stored = await chrome.storage.local.get(["extensionToken", "resumeCache:list"]);

@@ -99,6 +99,8 @@ export type ResumeSummary = {
 export type UserProfile = {
   nickname: string;
   avatar?: string;
+  invitationCode?: string;
+  membershipExpiresAt?: number | null;
 };
 
 export type AiAnalysisResult = {
@@ -108,6 +110,7 @@ export type AiAnalysisResult = {
 
 export type PageCommand =
   | { type: "SCAN_PAGE" }
+  | { type: "FILL_FOCUSED_TEXT"; value: string }
   | { type: "FILL_FIELDS"; values: Record<string, FieldValue>; mode: "incremental" | "overwrite"; debug?: boolean }
   | { type: "UNDO_FILL" }
   | { type: "ADVANCE_FORM_STEP" }
@@ -116,6 +119,9 @@ export type PageCommand =
   | { type: "GET_PAGE_CONTEXT" };
 
 export type ExtensionMessage =
+  | { type: "FLOATING_FILL_COMMAND"; action: "start" }
+  | { type: "GET_FILL_STATS" }
+  | { type: "RECORD_SUCCESSFUL_FILL"; filledCount: number }
   | { type: "OPEN_FLOATING_PANEL" }
   | { type: "OPEN_OFFER_STAR_LOGIN" }
   | { type: "OPEN_OFFER_STAR_RESUME" }

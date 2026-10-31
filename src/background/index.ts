@@ -13,10 +13,12 @@ import { OFFER_STAR_EXTENSION_LOGIN_URL, shouldCloseLoginWindow } from "../share
 import { withRequestTimeout } from "../shared/request-timeout";
 import { readOfferStarTokenInPage } from "../shared/token-sync";
 import { normalizeUserProfile } from "../shared/user-profile";
+import { readFillStats, recordSuccessfulFill } from "../shared/fill-stats";
 
 const API_BASE = "https://api.gfjianli.com/api";
 const EXTENSION_AI_URL = import.meta.env.VITE_OFFER_STAR_AI_URL || "https://offer.gfjianli.com/api/extension/ai/analyze";
 let loginWindowId: number | undefined;
+let fillStatsQueue: Promise<unknown> = Promise.resolve();
 
 browser.windows.onRemoved.addListener((windowId) => {
   if (windowId === loginWindowId) loginWindowId = undefined;
@@ -43,6 +45,23 @@ toolbarAction?.onClicked.addListener((tab) => {
 
 browser.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendResponse) => {
   console.info("[Offer Star][Background] 收到消息", { 类型: message.type, 标签页: sender.tab?.id });
+  if (message.type === "GET_FILL_STATS" || message.type === "RECORD_SUCCESSFUL_FILL") {
+    const runtimeWithUrl = browser.runtime as typeof browser.runtime & { getURL: (path: string) => string };
+    if (!sender.url?.startsWith(runtimeWithUrl.getURL(""))) {
+      sendResponse({ error: "请从扩展面板更新填写统计" });
+      return false;
+    }
+    // 所有面板共用后台串行写入，避免多个网页同时填写时覆盖计数。
+    const operation = fillStatsQueue.then(async () => {
+      const stored = await browser.storage.local.get("fillStats");
+      const stats = message.type === "RECORD_SUCCESSFUL_FILL" ? recordSuccessfulFill(stored.fillStats, message.filledCount) : readFillStats(stored.fillStats);
+      if (message.type !== "GET_FILL_STATS") await browser.storage.local.set({ fillStats: stats });
+      return stats;
+    });
+    fillStatsQueue = operation.catch(() => undefined);
+    void operation.then(sendResponse).catch(() => sendResponse({ error: "填写统计暂时无法保存，请重试" }));
+    return true;
+  }
   if (message.type === "GET_RESUME_PROFILE") {
     void getResumeProfile(message.resumeId).then(sendResponse).catch((error) => {
       console.error("[Offer Star][Background] 获取简历失败", error);
@@ -209,7 +228,7 @@ async function openResumeManagePage() {
 async function getResumeProfile(resumeId: string): Promise<ResumeProfile> {
   console.info("[Offer Star][Background] 开始获取简历", { 简历编号: resumeId });
   const { extensionToken } = await browser.storage.local.get("extensionToken") as { extensionToken?: string };
-  if (!extensionToken) throw new Error("请先登录 Offer Star");
+  if (!extensionToken) throw new Error("请先登录极速海投");
   const cacheKey = profileCacheKey(resumeId);
   try {
     const response = await requestOfferStar(`/c/resume/${encodeURIComponent(resumeId)}`, extensionToken);
@@ -230,14 +249,14 @@ async function getResumeProfile(resumeId: string): Promise<ResumeProfile> {
 
 async function getUserProfile() {
   const { extensionToken } = await browser.storage.local.get("extensionToken") as { extensionToken?: string };
-  if (!extensionToken) throw new Error("请先登录 Offer Star");
+  if (!extensionToken) throw new Error("请先登录极速海投");
   const response = await requestOfferStar("/auth/c/getLoginUser/offer", extensionToken);
   return normalizeUserProfile(response);
 }
 
 async function getResumeList(): Promise<ResumeSummary[]> {
   const { extensionToken } = await browser.storage.local.get("extensionToken") as { extensionToken?: string };
-  if (!extensionToken) throw new Error("请先登录 Offer Star");
+  if (!extensionToken) throw new Error("请先登录极速海投");
   try {
     const response = await requestOfferStar("/c/resume/templates/my?page=1&limit=100", extensionToken);
     const list = normalizeResumeList(response);
@@ -279,7 +298,7 @@ async function requestOfferStar(path: string, token: string): Promise<unknown> {
 
 async function analyzePageWithAi(message: Extract<ExtensionMessage, { type: "ANALYZE_PAGE_WITH_AI" }>) {
   const { extensionToken } = await browser.storage.local.get("extensionToken") as { extensionToken?: string };
-  if (!extensionToken) throw new Error("请先登录 Offer Star");
+  if (!extensionToken) throw new Error("请先登录极速海投");
   try {
     return await requestAiGateway(EXTENSION_AI_URL, extensionToken, buildAiRequestBody(message), {
       timeoutMs: 15_000,
