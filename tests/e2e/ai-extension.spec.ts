@@ -42,7 +42,7 @@ test("真实扩展可以通过本地 AI 网关审核并拒绝草稿", async () =
       predicate: (request) => request.url().endsWith("/api/mock-ai") && request.method() === "POST"
     });
     await page.goto("http://127.0.0.1:4173/simple.html?email=url-private%40example.com&phone=13812345678#private-fragment");
-    await page.getByRole("button", { name: "打开 Offer Star 简历助手" }).click();
+    await page.getByRole("button", { name: "打开极速海投简历助手" }).click();
     const panel = page.frameLocator("#offer-star-floating-panel iframe");
     await expect(panel.getByText("AI 审核测试简历")).toBeVisible();
     await panel.getByRole("button", { name: "扫描当前页面" }).click();

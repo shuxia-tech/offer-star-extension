@@ -1,12 +1,14 @@
 import type { ExtensionMessage } from "../shared/messages";
 import { browser } from "wxt/browser";
+import { createPreviewTextFill } from "./preview-fill";
 import { createDomEngine } from "./dom-engine";
 import { extractPageContext } from "../shared/page-context";
 import { installNavigationObserver } from "../shared/navigation-observer";
 import { installFormMutationObserver } from "../shared/form-mutation-observer";
 import { AUTOFILL_FORM_NOTICE_SETTLE_MS, createFormNoticeGate } from "../shared/form-notice-gate";
 import { shouldReportPageChange } from "../shared/page-change-routing";
-import { mountFloatingLauncher, mountFloatingPanel, setFloatingLauncherVisible, unmountFloatingPanel } from "./floating-launcher";
+import { dragFloatingPanel, mountFloatingLauncher, mountFloatingPanel, nudgeFloatingPanel, setFloatingFillState, setFloatingLauncherVisible, setFloatingPanelVisible, unmountFloatingPanel } from "./floating-launcher";
+import { isFloatingFillBusy, isFloatingFillState, type FloatingFillState } from "../shared/floating-state";
 import { shouldRequestLoginWindowClose, shouldSyncOfferStarLogin } from "../shared/login-window";
 import { isOfferStarAuthStorageKey, readOfferStarPageToken, tokenFromLoginCallback } from "../shared/token-sync";
 import { detectSecurityChallenge } from "../shared/security-page";
@@ -14,8 +16,18 @@ import { sanitizePageUrl } from "../shared/privacy";
 import { withRequestTimeout } from "../shared/request-timeout";
 
 let engine = createDomEngine(document, location.href);
+const previewTextFill = createPreviewTextFill(document);
+const extensionRuntime = browser.runtime as typeof browser.runtime & { getURL: (path: string) => string };
 let hasScanned = false;
 let pageTabId: number | undefined;
+let quickFillPending = false;
+let quickFillTimer: number | undefined;
+let floatingBusy = false;
+let lastFloatingState: FloatingFillState = "idle";
+function clearQuickFillPending() {
+  quickFillPending = false;
+  window.clearTimeout(quickFillTimer);
+}
 void browser.runtime.sendMessage({ type: "GET_CURRENT_TAB_ID" }).then((result: { tabId?: number | null }) => {
   if (Number.isInteger(result?.tabId) && (result.tabId as number) > 0) pageTabId = result.tabId as number;
 }).catch(() => undefined);
@@ -30,6 +42,10 @@ const formNoticeGate = createFormNoticeGate(
 );
 
 installNavigationObserver(window, ({ url, reason }) => {
+  clearQuickFillPending();
+  previewTextFill.clear();
+  floatingBusy = false;
+  setFloatingFillState(document, "idle");
   engine = createDomEngine(document, url);
   hasScanned = false;
   unmountFloatingPanel(document);
@@ -45,36 +61,89 @@ installFormMutationObserver(document, () => {
   notifyPanel({ type: "PAGE_FORM_CHANGED", url: location.href });
 }, () => formNoticeGate.isHeld());
 
-// 在网页右下角提供轻量入口，用户不需要反复打开浏览器工具栏。
+// 只有用户点击快捷条才创建填写 iframe，普通悬停不读取账号和简历。
+const ensureFloatingPanel = async (visible: boolean) => {
+  const result = await browser.runtime.sendMessage({ type: "GET_CURRENT_TAB_ID" }) as { tabId?: number | null };
+  const tabId = result?.tabId;
+  if (!Number.isInteger(tabId) || (tabId as number) <= 0) throw new Error("无法确定当前标签页");
+  pageTabId = tabId as number;
+  const panel = mountFloatingPanel(document, `${extensionRuntime.getURL("floating-panel.html")}?embedded=1&tabId=${tabId}`);
+  setFloatingPanelVisible(document, visible);
+  setFloatingLauncherVisible(document, !visible);
+  return panel;
+};
 const openFloatingPanel = () => {
-  console.info("[Offer Star][Content] 用户点击网页悬浮入口，准备打开网页内面板");
-  void browser.runtime.sendMessage({ type: "GET_CURRENT_TAB_ID" }).then((result: { tabId?: number | null }) => {
-    const tabId = result?.tabId;
-    if (!Number.isInteger(tabId) || (tabId as number) <= 0) throw new Error("无法确定当前标签页");
-    const runtimeWithUrl = browser.runtime as typeof browser.runtime & { getURL: (path: string) => string };
-    mountFloatingPanel(document, `${runtimeWithUrl.getURL("floating-panel.html")}?embedded=1&tabId=${tabId}`);
-    setFloatingLauncherVisible(document, false);
-  }).catch((error) => {
-    console.error("[Offer Star][Content] 网页内悬浮面板打开失败", error);
-  });
+  void ensureFloatingPanel(true).catch(() => setFloatingFillState(document, "error"));
+};
+const sendQuickFill = () => {
+  clearQuickFillPending();
+  void browser.runtime.sendMessage({ type: "FLOATING_FILL_COMMAND", action: "start" } satisfies ExtensionMessage)
+    .catch(() => { floatingBusy = false; setFloatingFillState(document, "error"); });
+};
+const quickFill = () => {
+  if (floatingBusy || quickFillPending) return;
+  // 官网补全简历后重试时重新加载列表，无需刷新申请网页。
+  if (["missing", "error", "login"].includes(lastFloatingState)) unmountFloatingPanel(document);
+  quickFillPending = true;
+  floatingBusy = true;
+  setFloatingFillState(document, "loading");
+  quickFillTimer = window.setTimeout(() => {
+    clearQuickFillPending(); floatingBusy = false; setFloatingFillState(document, "error");
+  }, 35000);
+  void ensureFloatingPanel(false).then((panel) => {
+    if (quickFillPending && panel.dataset.ready === "true") sendQuickFill();
+  }).catch(() => { clearQuickFillPending(); floatingBusy = false; setFloatingFillState(document, "error"); });
 };
 
 if (location.hostname !== "offer.gfjianli.com" || location.pathname !== "/extension-login") {
-  mountFloatingLauncher(document, openFloatingPanel);
+  const runtimeWithUrl = browser.runtime as typeof browser.runtime & { getURL: (path: string) => string };
+  mountFloatingLauncher(document, openFloatingPanel, runtimeWithUrl.getURL("icons/icon128.png"), quickFill, () => window.open("https://gfjianli.com/", "_blank", "noopener,noreferrer"));
 }
 
 window.addEventListener("message", (event) => {
+  if (!event.isTrusted) return;
   const frame = document.getElementById("offer-star-floating-panel-frame") as HTMLIFrameElement | null;
   if (!frame || event.source !== frame.contentWindow) return;
+  if (event.origin !== extensionRuntime.getURL("").replace(/\/$/, "")) return;
+  if (event.data?.type === "OFFER_STAR_PANEL_READY") {
+    const panel = document.getElementById("offer-star-floating-panel");
+    if (panel) panel.dataset.ready = "true";
+    if (quickFillPending) sendQuickFill();
+  }
+  if (event.data?.type === "OFFER_STAR_DOCK_STATE" && isFloatingFillState(event.data.state)) {
+    // 初始化期间不能用 idle 覆盖用户刚发起的读取状态。
+    if (!quickFillPending) {
+      floatingBusy = isFloatingFillBusy(event.data.state);
+      lastFloatingState = event.data.state;
+      setFloatingFillState(document, event.data.state);
+    }
+  }
+  if (event.data?.type === "OFFER_STAR_PANEL_DRAG" && ["start", "move", "end"].includes(event.data.stage)) {
+    dragFloatingPanel(document, event.data.stage, event.data.x, event.data.y);
+  }
+  if (event.data?.type === "OFFER_STAR_PANEL_NUDGE") nudgeFloatingPanel(document, event.data.dx, event.data.dy);
   if (event.data?.type === "OFFER_STAR_CLOSE_FLOATING_PANEL") {
     console.info("[Offer Star][Content] 用户关闭网页内悬浮面板");
-    unmountFloatingPanel(document);
+    if (floatingBusy) setFloatingPanelVisible(document, false);
+    else unmountFloatingPanel(document);
     setFloatingLauncherVisible(document, true);
   }
 });
 
 browser.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendResponse) => {
   console.info("[Offer Star][Content] 收到消息", { 类型: message.type });
+  if (message.type === "FILL_FOCUSED_TEXT") {
+    // 手动文字填写只接收扩展面板经后台发送的命令，网页脚本不能直接触发。
+    if (_sender.id !== browser.runtime.id || !_sender.url?.startsWith(extensionRuntime.getURL(""))) {
+      sendResponse({ filled: false, error: "请从极速海投的简历预览中双击填写" });
+      return false;
+    }
+    formNoticeGate.engage();
+    try { sendResponse(previewTextFill.fill(message.value)); }
+    catch { sendResponse({ filled: false, error: "网页未接受这次填写，请单击复制后手动粘贴" }); }
+    finally { formNoticeGate.releaseAfter(AUTOFILL_FORM_NOTICE_SETTLE_MS); }
+    return false;
+  }
   if (message.type === "SCAN_PAGE") {
     const blockedReason = detectSecurityChallenge(document, location.href);
     if (blockedReason) {

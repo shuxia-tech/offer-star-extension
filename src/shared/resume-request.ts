@@ -2,7 +2,7 @@ import { withRequestTimeout } from "./request-timeout";
 
 export class ResumeSessionExpiredError extends Error {
   constructor() {
-    super("登录已失效，请重新登录 Offer Star");
+    super("登录已失效，请重新登录极速海投");
     this.name = "ResumeSessionExpiredError";
   }
 }

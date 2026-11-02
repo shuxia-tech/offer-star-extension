@@ -17,7 +17,7 @@ export async function reconnectOfferStarLogin(dependencies: {
   const tabs = dependencies.tabs
     .filter((tab) => tab.id !== undefined && isOfferStarPage(tab.url))
     .sort((a, b) => Number(Boolean(b.active)) - Number(Boolean(a.active)) || (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0));
-  if (!tabs.length) throw new Error("未找到同一浏览器中的 Offer Star 官网，请先打开官网并登录");
+  if (!tabs.length) throw new Error("未找到同一浏览器中的极速海投官网，请先打开官网并登录");
   let readFailed = false;
   for (const tab of tabs) {
     let token: string | null;
