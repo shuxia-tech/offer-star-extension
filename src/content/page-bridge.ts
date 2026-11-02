@@ -13,6 +13,18 @@ export function installOfferStarPageBridge(doc: Document = document) {
   if (!view || view.__offerStarPageBridge) return;
   if (import.meta.env.DEV) trackClickListeners(view);
   view.__offerStarPageBridge = true;
+  doc.addEventListener("offer-star-type", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement)) return;
+    const value = target.getAttribute("data-offer-star-type-value") ?? "";
+    target.removeAttribute("data-offer-star-type-value");
+    const tracker = (target as HTMLInputElement & { _valueTracker?: { setValue: (next: string) => void } })._valueTracker;
+    tracker?.setValue(target.value === value ? `${value} ` : target.value);
+    Object.getOwnPropertyDescriptor(Object.getPrototypeOf(target), "value")?.set?.call(target, value);
+    target.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
+    target.dispatchEvent(new Event("change", { bubbles: true }));
+    target.setAttribute("data-offer-star-typed", "1");
+  }, true);
   doc.addEventListener("offer-star-activate", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;

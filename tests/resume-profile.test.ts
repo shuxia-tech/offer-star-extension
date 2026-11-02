@@ -39,6 +39,25 @@ describe("简历接口数据转换", () => {
     expect(profile.workExperience[0]?.description).toBe("参与实验：\n• 整理数据\n• 制作报表");
     expect(profile.campusExperience?.[0]).toMatchObject({ name: "学生会", role: "干事", description: "负责活动安排\n• 撰写公告" });
     expect(profile.honors).toEqual([]);
+    expect(profile.languages).toEqual([]);
+  });
+
+  it("技能与证书里的英语描述不会当成语言能力，独立语言模块才会", () => {
+    const skillsOnly = normalizeResumeProfile({
+      resumeModules: [
+        { moduleType: "技能与证书", moduleContent: JSON.stringify({ entries: [{ category: "英语能力", items: "IELTS 6.5、英语六级" }] }) }
+      ]
+    });
+    expect(skillsOnly.skills).toEqual(["英语能力：IELTS 6.5、英语六级"]);
+    expect(skillsOnly.languages).toEqual([]);
+
+    const withLanguage = normalizeResumeProfile({
+      resumeModules: [
+        { moduleType: "技能与证书", moduleContent: JSON.stringify({ description: "Python" }) },
+        { moduleType: "语言能力", moduleContent: JSON.stringify([{ name: "英语", level: "熟练" }, { name: "日语" }]) }
+      ]
+    });
+    expect(withLanguage.languages).toEqual(["英语", "日语"]);
   });
 
   it("忽略无效模块并保留可用简历列表", () => {

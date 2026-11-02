@@ -28,7 +28,9 @@ export type FieldKey =
   | "startDate"
   | "endDate"
   | "description"
+  | "selfIntroduction"
   | "skills"
+  | "language"
   | "projectName"
   | "projectRole"
   | "projectStartDate"
@@ -86,6 +88,8 @@ export type ResumeProfile = {
   projectExperience?: Array<{ name: string; role?: string; description?: string; startTime?: string; endTime?: string }>;
   skills: string[];
   skillsText?: string;
+  /** 只有简历里存在独立的语言能力模块时才有内容。 */
+  languages?: string[];
   selfIntroduction?: string;
 };
 

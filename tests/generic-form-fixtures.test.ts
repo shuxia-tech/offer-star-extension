@@ -28,15 +28,15 @@ const fixtures = [
     name: "aria-label 和 placeholder 控件",
     url: "https://jobs.example.cn/quick-apply",
     html: `<input aria-label="手机号" /><input placeholder="电子邮箱" /><textarea aria-label="个人优势"></textarea>`,
-    expected: ["phone", "email", "description"],
-    values: { phone: "13800000000", email: "zhangsan@example.com", description: "负责前端开发" }
+    expected: ["phone", "email", "selfIntroduction"],
+    values: { phone: "13800000000", email: "zhangsan@example.com", selfIntroduction: "善于协作" }
   },
   {
     name: "data-label 和 contenteditable 控件",
     url: "https://ats.example.cn/candidate",
     html: `<div data-label="目标职位"><input /></div><div data-label="自我介绍" contenteditable="true"></div>`,
-    expected: ["targetPosition", "description"],
-    values: { targetPosition: "前端工程师", description: "负责前端开发" }
+    expected: ["targetPosition", "selfIntroduction"],
+    values: { targetPosition: "前端工程师", selfIntroduction: "负责前端开发" }
   }
 ] as const;
 

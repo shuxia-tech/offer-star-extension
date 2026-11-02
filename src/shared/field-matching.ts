@@ -12,6 +12,7 @@ export function normalizeFieldLabel(label: string) {
 }
 
 export function guessFieldKey(label: string): { key: FieldKey | null; confidence: number } {
+  if (/推荐码|邀请码|内推码|户籍|户口所在|籍贯/.test(label)) return { key: null, confidence: 0 };
   const alias = aliasIndex.get(normalizeFieldLabel(label));
   if (alias) return { key: alias, confidence: 0.86 };
   const match = compiledPatterns.find((item) => item.pattern.test(label));

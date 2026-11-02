@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildResumeFieldValues, inferMajorCategory } from "../src/shared/fill-values";
+import { normalizeResumeProfile } from "../src/shared/resume-profile";
 
 describe("最终填写值合并", () => {
   it("默认使用简历值，用户确认的 AI 草稿覆盖对应字段", () => {
@@ -17,11 +18,22 @@ describe("最终填写值合并", () => {
     expect(values.gender).toBe("男");
     expect(values.targetSalary).toBe("15K");
     expect(values.skills).toBe("TypeScript、React");
+    expect(values.language).toBe("");
     expect(values.projectName).toBe("招聘助手");
     expect(values.projectRole).toBe("产品负责人");
     expect(values.projectStartDate).toBe("2024-01");
     expect(values.projectEndDate).toBe("2024-06");
     expect(values.projectDescription).toBe("设计自动填表流程");
+  });
+
+  it("没有语言能力模块时，语言类型不会写入技能与证书", () => {
+    const profile = normalizeResumeProfile({
+      resumeModules: [
+        { moduleType: "技能与证书", moduleContent: JSON.stringify({ entries: [{ category: "英语能力", items: "IELTS 6.5、英语六级" }] }) }
+      ]
+    });
+    expect(buildResumeFieldValues(profile).language).toBe("");
+    expect(buildResumeFieldValues(profile).skills).toContain("英语能力");
   });
 
   it("按最高学历推断专业类别，没有关键词时留空", () => {

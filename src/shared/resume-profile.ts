@@ -27,6 +27,7 @@ export function normalizeResumeProfile(payload: unknown): ResumeProfile {
   const otherExperience = asArray(moduleMap.get("其他经历"));
   const awards = asArray(moduleMap.get("荣誉奖项") ?? moduleMap.get("获奖经历") ?? moduleMap.get("荣誉证书"));
   const skillModule = moduleMap.get("专业技能") ?? moduleMap.get("技能与证书") ?? moduleMap.get("其他能力") ?? moduleMap.get("技能/证书/语言/兴趣爱好");
+  const languageModule = firstModule(moduleMap, ["语言能力", "语言技能", "外语能力", "语言水平", "外语水平"]);
   const advantageModule = asRecord(moduleMap.get("个人优势") ?? moduleMap.get("个人总结") ?? moduleMap.get("自我评价"));
   const skills = readSkills(skillModule);
   const honors = awards.map((item) => ({
@@ -95,6 +96,7 @@ export function normalizeResumeProfile(payload: unknown): ResumeProfile {
     otherExperience: otherExperience.map(readActivity).filter(hasActivityContent),
     skills: skills.skills,
     skillsText: skills.skillsText,
+    languages: languageModule === undefined ? [] : readLanguages(languageModule),
     selfIntroduction: plain(advantageModule.description)
   };
 }
@@ -117,6 +119,29 @@ function readActivity(item: LooseRecord) {
 
 function hasActivityContent(item: ReturnType<typeof readActivity>) {
   return Boolean(item.name || item.role || item.section || item.address || item.description || item.startTime || item.endTime);
+}
+
+function firstModule(moduleMap: Map<string, unknown>, names: string[]) {
+  for (const name of names) {
+    if (moduleMap.has(name)) return moduleMap.get(name);
+  }
+  return undefined;
+}
+
+function readLanguages(moduleValue: unknown) {
+  const records = Array.isArray(moduleValue) ? moduleValue : [moduleValue];
+  const names = records.flatMap((entry) => {
+    const item = asRecord(entry);
+    if (Array.isArray(item.entries)) {
+      return item.entries.map((row) => languageName(asRecord(row)));
+    }
+    return [languageName(item)];
+  });
+  return [...new Set(names.map((name) => name.trim()).filter(Boolean))];
+}
+
+function languageName(item: LooseRecord) {
+  return stringValue(item.language ?? item.name ?? item.lang ?? item.type ?? item.category) || plain(item.description);
 }
 
 function readSkills(moduleValue: unknown) {

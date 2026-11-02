@@ -47,6 +47,8 @@ describe("简历字段识别", () => {
     expect(guessFieldKey("最高学历专业类别").key).toBe("highestMajorCategory");
     expect(guessFieldKey("最高学历").key).toBe("highestDegree");
     expect(guessFieldKey("专业技能").key).toBe("skills");
+    expect(guessFieldKey("语言类型").key).toBe("language");
+    expect(guessFieldKey("掌握程度").key).toBeNull();
     expect(guessFieldKey("意向城市").key).toBe("targetCity");
     expect(guessFieldKey("是否有实习经验").key).toBe("hasInternship");
     expect(guessFieldKey("是否有校内外实践活动经历").key).toBe("hasActivity");
@@ -63,8 +65,15 @@ describe("简历字段识别", () => {
     expect(guessFieldKey("项目描述").key).toBe("projectDescription");
   });
 
-  it("未知字段不会误匹配", () => {
-    expect(guessFieldKey("自定义问题一")).toEqual({ key: null, confidence: 0 });
+  it("推荐码、户籍地址不识别，自我描述不是工作内容", () => {
+    expect(guessFieldKey("推荐码").key).toBeNull();
+    expect(guessFieldKey("邀请码").key).toBeNull();
+    expect(guessFieldKey("户籍地址").key).toBeNull();
+    expect(guessFieldKey("籍贯").key).toBeNull();
+    expect(guessFieldKey("自我描述").key).toBe("selfIntroduction");
+    expect(guessFieldKey("自我介绍").key).toBe("selfIntroduction");
+    expect(guessFieldKey("工作内容").key).toBe("description");
+    expect(guessFieldKey("实习工作职责").key).toBe("description");
   });
 
   it.each([
