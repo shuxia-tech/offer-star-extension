@@ -27,70 +27,125 @@ export function mountFloatingLauncher(document: Document, onOpen: () => void, lo
   Object.assign(dock.style, {
     all: "initial", position: "fixed", right: "0", top: `${Math.max(0, view.innerHeight - 140)}px`,
     zIndex: "2147483647", display: "flex", alignItems: "center", boxSizing: "border-box", height: "48px",
-    width: "48px", maxWidth: "100vw", padding: "5px", gap: "8px", overflow: "hidden", border: "1px solid #e8ebf0",
+    width: "48px", maxWidth: "100vw", padding: "5px", gap: "10px", overflow: "hidden", border: "1px solid #e8ebf0",
     borderRadius: "26px 0 0 26px", background: "#fff", boxShadow: "0 4px 20px #23334d1c",
     fontFamily: '"PingFang SC", "Microsoft YaHei", system-ui, sans-serif', color: "#354258",
-    transition: motionPreference?.matches ? "none" : "width .18s ease"
+    transition: "none"
   });
   const launcher = document.createElement("button");
   launcher.id = "offer-star-floating-launcher"; launcher.type = "button";
   launcher.title = "单击打开极速海投；长按约 0.3 秒拖动，松手自动贴边；方向键移动";
   launcher.setAttribute("aria-label", "打开极速海投简历助手"); launcher.setAttribute("aria-haspopup", "dialog");
   launcher.setAttribute("aria-expanded", "false"); launcher.setAttribute("aria-controls", "offer-star-floating-panel");
-  Object.assign(launcher.style, { all: "initial", display: "grid", placeItems: "center", boxSizing: "border-box", width: "36px", height: "36px", flex: "0 0 36px", padding: "4px", border: "0", borderRadius: "50%", cursor: "grab", touchAction: "none", outlineOffset: "1px" });
+  Object.assign(launcher.style, { all: "initial", position: "relative", display: "grid", placeItems: "center", boxSizing: "border-box", width: "36px", height: "36px", flex: "0 0 36px", padding: "4px", border: "0", borderRadius: "50%", cursor: "grab", touchAction: "none", outlineOffset: "1px" });
   const logo = document.createElement("img");
   logo.src = logoUrl; logo.alt = ""; logo.draggable = false;
-  Object.assign(logo.style, { all: "initial", display: "block", width: "28px", height: "28px", borderRadius: "8px", pointerEvents: "none" });
+  Object.assign(logo.style, { all: "initial", display: "block", width: "28px", height: "28px", opacity: "0", pointerEvents: "none" });
   launcher.appendChild(logo);
+  // 橙色底板保持不动，白色纸飞机单独飞出和返回，避免整个 Logo 方块移动。
+  const plate = document.createElement("span");
+  Object.assign(plate.style, { position: "absolute", left: "4px", top: "4px", width: "28px", height: "28px", borderRadius: "7px", background: "linear-gradient(135deg, #ff942c, #ff352d)", pointerEvents: "none" });
+  const plane = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  plane.id = "offer-star-floating-plane";
+  plane.setAttribute("viewBox", "0 0 128 128"); plane.setAttribute("aria-hidden", "true"); plane.setAttribute("focusable", "false");
+  Object.assign(plane.style, { position: "absolute", left: "4px", top: "4px", width: "28px", height: "28px", color: "#fff", overflow: "visible", pointerEvents: "none", transformOrigin: "50% 50%", filter: "drop-shadow(0 1px 2px #8e4b3038)" });
+  const planePath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  planePath.setAttribute("fill", "currentColor"); planePath.setAttribute("fill-rule", "evenodd");
+  planePath.setAttribute("d", "M104 27 79 100 60 79 43 89 49 68 28 55Z M49 68 86 42 60 63 74 63 60 79Z");
+  plane.appendChild(planePath); launcher.append(plate, plane);
   const label = document.createElement("span"); label.id = "offer-star-floating-status";
   label.setAttribute("role", "status"); label.setAttribute("aria-live", "polite");
-  Object.assign(label.style, { fontSize: "13px", fontWeight: "600", lineHeight: "1.4", flex: "1", minWidth: "0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
+  Object.assign(label.style, { fontSize: "13px", fontWeight: "500", color: "#68758a", lineHeight: "1.4", flex: "0 1 auto", minWidth: "0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
   const action = document.createElement("button"); action.type = "button"; action.id = "offer-star-floating-fill";
   const manage = document.createElement("button"); manage.type = "button"; manage.textContent = "完善简历"; manage.id = "offer-star-floating-manage";
   for (const button of [action, manage]) Object.assign(button.style, {
     all: "initial", boxSizing: "border-box", flex: "0 0 auto", minHeight: "34px", padding: "0 12px", fontFamily: "inherit", fontSize: "12px", fontWeight: "650", lineHeight: "34px", textAlign: "center", borderRadius: "11px", background: "linear-gradient(120deg, #ff7546, #ff4c1c)", color: "#fff", cursor: "pointer", outlineOffset: "2px"
   });
   Object.assign(manage.style, { background: "#fff1e9", color: "#ed5c24", padding: "0 10px" });
-  dock.append(launcher, label, manage, action);
+  const content = document.createElement("div");
+  content.id = "offer-star-floating-content";
+  Object.assign(content.style, { all: "initial", display: "flex", alignItems: "center", gap: "10px", flex: "0 0 auto", width: "max-content", minWidth: "0", fontFamily: "inherit", visibility: "hidden", opacity: "0", pointerEvents: "none" });
+  content.append(label, manage, action);
+  dock.append(launcher, content);
   let state: FloatingFillState = "idle", hovered = false, focused = false, suppressClick = false;
   let drag: { pointer: number; start: Point; origin: Point; moved: boolean; armed: boolean; cancelled: boolean } | undefined;
   let holdTimer: number | undefined;
+  let dragShield: HTMLDivElement | undefined;
   let idleAnimation: Animation | undefined;
+  let widthTransitioning = false;
+  let targetWidth = 48;
+  let settleTimer: number | undefined;
+  const saved = placement(document).dock;
+  let edge = saved?.edge ?? "right";
   const syncIdleMotion = () => {
-    const playing = !motionPreference?.matches && !document.hidden && dock.isConnected && dock.style.display !== "none" && !drag && !hovered && !focused && !isFloatingFillBusy(state);
+    const playing = !motionPreference?.matches && !document.hidden && dock.isConnected && dock.style.display !== "none" && !widthTransitioning && !drag && !hovered && !focused && !isFloatingFillBusy(state);
     if (!playing) { idleAnimation?.cancel(); idleAnimation = undefined; }
-    else if (!idleAnimation && logo.animate) {
-      // 动效只作用于图标，不移动点击区域；三秒一轮，交互和后台状态均暂停。
-      idleAnimation = logo.animate([
-        { transform: "translateY(0) scale(1)", filter: "drop-shadow(0 0 0 rgba(255,108,61,0))" },
-        { transform: "translateY(-2px) scale(1.04)", filter: "drop-shadow(0 2px 4px rgba(255,108,61,.24))" },
-        { transform: "translateY(0) scale(1)", filter: "drop-shadow(0 0 0 rgba(255,108,61,0))" }
-      ], { duration: 3000, iterations: Infinity, easing: "ease-in-out" });
+    else if (!idleAnimation && plane.animate) {
+      const direction = edge === "right" ? -1 : 1;
+      const outbound = edge === "right" ? -90 : 0, inbound = edge === "right" ? 90 : 180;
+      idleAnimation = plane.animate([
+        { offset: 0, transform: "translate(0, 0) rotate(0deg) scale(1)", opacity: 1, color: "#fff" },
+        { offset: .35, transform: "translate(0, 0) rotate(0deg) scale(1)", opacity: 1, color: "#fff" },
+        { offset: .44, transform: `translate(${direction * 4}px, -3px) rotate(${outbound * .85}deg) scale(1.02)`, opacity: 1, color: "#fff" },
+        { offset: .57, transform: `translate(${direction * 38}px, -30px) rotate(${outbound}deg) scale(.75)`, opacity: 0, color: "#ff6a35" },
+        { offset: .64, transform: `translate(${direction * 38}px, -30px) rotate(${inbound}deg) scale(.75)`, opacity: 0, color: "#ff6a35" },
+        { offset: .76, transform: `translate(${direction * 20}px, -16px) rotate(${inbound}deg) scale(.88)`, opacity: 1, color: "#ff6a35" },
+        { offset: .9, transform: "translate(0, 0) rotate(0deg) scale(1)", opacity: 1, color: "#fff" },
+        { offset: 1, transform: "translate(0, 0) rotate(0deg) scale(1)", opacity: 1, color: "#fff" }
+      ], { duration: 4600, iterations: Infinity, easing: "ease-in-out" });
     }
     dock.dataset.motion = idleAnimation ? "running" : "paused";
   };
   dockMotionUpdates.set(document, syncIdleMotion);
-  const saved = placement(document).dock;
-  let edge = saved?.edge ?? "right";
+  const settleWidth = () => {
+    widthTransitioning = false;
+    dock.style.overflow = dock.dataset.expanded === "true" ? "hidden" : "visible";
+    syncIdleMotion();
+  };
+  const updateDockWidth = () => {
+    const expanded = dock.dataset.expanded === "true";
+    content.style.maxWidth = `${Math.max(0, viewport(document).width - 72)}px`;
+    const next = Math.min(viewport(document).width, expanded ? 72 + content.getBoundingClientRect().width : 48);
+    const immediate = motionPreference?.matches || drag?.armed || !dock.isConnected;
+    dock.style.transition = immediate ? "none" : "width 320ms cubic-bezier(.22, 1, .36, 1), padding 320ms cubic-bezier(.22, 1, .36, 1)";
+    if (next !== targetWidth || immediate) {
+      view.clearTimeout(settleTimer);
+      widthTransitioning = !immediate && next !== targetWidth;
+      targetWidth = next;
+      dock.style.overflow = "hidden";
+      dock.style.width = `${next}px`;
+      if (widthTransitioning) settleTimer = view.setTimeout(settleWidth, 350);
+      else settleWidth();
+    } else if (!widthTransitioning) settleWidth();
+  };
+  dock.addEventListener("transitionend", (event) => {
+    if (event.target === dock && event.propertyName === "width") { view.clearTimeout(settleTimer); settleWidth(); }
+  });
   const positionDock = (top: number) => {
     dock.style.top = `${Math.min(Math.max(0, top), Math.max(0, viewport(document).height - 48))}px`;
     dock.style.left = edge === "left" ? "0px" : "auto"; dock.style.right = edge === "right" ? "0px" : "auto";
     dock.style.borderRadius = edge === "right" ? "26px 0 0 26px" : "0 26px 26px 0";
-    // 图标始终靠屏幕边缘，展开快捷条时不会从指针下方移开。
-    dock.style.flexDirection = edge === "right" ? "row-reverse" : "row";
+    // 两侧吸附都保持 Logo、说明、操作按钮的阅读顺序。
+    dock.style.flexDirection = "row";
     dock.dataset.edge = edge;
   };
   const render = () => {
-    const expanded = !drag && (hovered || focused || isFloatingFillBusy(state));
+    const expanded = !drag?.armed && (hovered || focused || isFloatingFillBusy(state));
     dock.dataset.expanded = String(expanded); dock.dataset.state = state;
-    dock.style.width = expanded ? "min(350px, 100vw)" : "48px";
-    for (const element of [label, action]) element.style.display = expanded ? "block" : "none";
-    manage.style.display = expanded && state === "missing" ? "block" : "none";
+    manage.style.display = state === "missing" ? "block" : "none";
     label.textContent = floatingFillLabels[state]; label.title = floatingFillLabels[state];
     action.textContent = isFloatingFillBusy(state) ? "查看" : state === "login" ? "登录" : state === "idle" ? "填写" : "重新填写";
     action.setAttribute("aria-label", isFloatingFillBusy(state) ? "查看填写进度" : state === "login" ? "登录后填写" : state === "idle" ? "快捷填写" : "重新填写");
     dock.setAttribute("aria-busy", String(isFloatingFillBusy(state)));
-    dock.style.transition = motionPreference?.matches || drag ? "none" : "width .18s ease";
+    updateDockWidth();
+    dock.style.padding = expanded ? "5px 12px" : "5px";
+    content.inert = !expanded;
+    content.setAttribute("aria-hidden", String(!expanded));
+    content.style.transition = motionPreference?.matches || drag?.armed ? "none" : expanded ? "opacity 180ms ease 70ms, transform 280ms cubic-bezier(.22, 1, .36, 1) 40ms, visibility 0s" : "opacity 120ms ease, transform 160ms ease, visibility 0s linear 160ms";
+    content.style.visibility = expanded ? "visible" : "hidden";
+    content.style.opacity = expanded ? "1" : "0";
+    content.style.transform = expanded ? "translateX(0)" : "translateX(8px)";
+    content.style.pointerEvents = expanded ? "auto" : "none";
     syncIdleMotion();
   };
   dockRenderers.set(document, (value) => { state = value; render(); });
@@ -110,26 +165,38 @@ export function mountFloatingLauncher(document: Document, onOpen: () => void, lo
   manage.addEventListener("click", (event) => { if (event.isTrusted) onManage(); });
   const clearHold = () => { view.clearTimeout(holdTimer); holdTimer = undefined; };
   const armDrag = () => {
-    if (!drag || drag.cancelled) return;
+    if (!drag || drag.cancelled || drag.armed) return;
     drag.armed = true;
     suppressClick = true;
     dock.dataset.dragging = "true";
     launcher.style.cursor = "grabbing";
     launcher.style.boxShadow = "0 0 0 2px #ffbc9a";
+    const bounds = viewport(document);
+    const start = clampFloatingPosition(drag.origin.x, drag.origin.y, 48, 48, bounds.width, bounds.height);
+    Object.assign(dock.style, { left: `${start.x}px`, right: "auto", top: `${start.y}px`, borderRadius: "24px" });
+    // 拖动跨过网页 iframe 时，用透明层保持指针连贯，避免焦点切换中断拖动。
+    dragShield = document.createElement("div");
+    dragShield.id = "offer-star-launcher-drag-shield";
+    Object.assign(dragShield.style, { position: "fixed", inset: "0", zIndex: "2147483647", cursor: "grabbing", touchAction: "none", userSelect: "none", background: "transparent" });
+    dragShield.addEventListener("pointermove", onPointerMove);
+    dragShield.addEventListener("pointerup", (event) => finishDrag(event.pointerId));
+    dragShield.addEventListener("pointercancel", (event) => finishDrag(event.pointerId, true));
+    document.documentElement.insertBefore(dragShield, dock);
     render();
   };
   launcher.addEventListener("pointerdown", (event) => {
     if (!event.isTrusted || event.button !== 0 || drag) return;
-    // 按下时收起快捷条，以固定的 48px 命中区域拖动；桌面也保留常规按住拖动。
+    // 普通点击保持展开布局；真正开始拖动时以 Logo 的原位置收起，避免跳到右侧。
     const bounds = viewport(document);
-    drag = { pointer: event.pointerId, start: { x: event.clientX, y: event.clientY }, origin: { x: edge === "left" ? 0 : Math.max(0, bounds.width - 48), y: Number.parseFloat(dock.style.top) || 0 }, moved: false, armed: false, cancelled: false };
+    const iconRect = launcher.getBoundingClientRect();
+    drag = { pointer: event.pointerId, start: { x: event.clientX, y: event.clientY }, origin: { x: iconRect.width ? iconRect.left - 6 : edge === "left" ? 0 : Math.max(0, bounds.width - 48), y: Number.parseFloat(dock.style.top) || 0 }, moved: false, armed: false, cancelled: false };
     suppressClick = false;
     dock.dataset.dragging = "pending";
     launcher.setPointerCapture?.(event.pointerId);
     holdTimer = view.setTimeout(armDrag, 300);
     render();
   });
-  launcher.addEventListener("pointermove", (event) => {
+  const onPointerMove = (event: PointerEvent) => {
     if (!event.isTrusted || !drag || event.pointerId !== drag.pointer || drag.cancelled) return;
     const dx = event.clientX - drag.start.x, dy = event.clientY - drag.start.y;
     if (!drag.armed) {
@@ -143,11 +210,13 @@ export function mountFloatingLauncher(document: Document, onOpen: () => void, lo
     const bounds = viewport(document);
     const next = clampFloatingPosition(drag.origin.x + dx, drag.origin.y + dy, 48, 48, bounds.width, bounds.height);
     Object.assign(dock.style, { left: `${next.x}px`, right: "auto", top: `${next.y}px`, borderRadius: "24px" });
-  });
+  };
+  launcher.addEventListener("pointermove", onPointerMove);
   const finishDrag = (pointer?: number, cancelled = false) => {
     if (!drag || pointer !== undefined && pointer !== drag.pointer) return;
     const current = drag;
     drag = undefined;
+    dragShield?.remove(); dragShield = undefined;
     clearHold();
     suppressClick = cancelled || current.armed || current.moved || current.cancelled;
     if (current.moved) {
@@ -180,7 +249,8 @@ export function mountFloatingLauncher(document: Document, onOpen: () => void, lo
     positionDock(Number.parseFloat(dock.style.top) + (event.key === "ArrowUp" ? -10 : event.key === "ArrowDown" ? 10 : 0));
     placement(document).dock = { top: Number.parseFloat(dock.style.top), edge };
   });
-  view.addEventListener("resize", () => positionDock(Number.parseFloat(dock.style.top)));
+  view.addEventListener("resize", () => { positionDock(Number.parseFloat(dock.style.top)); render(); });
+  if (view.ResizeObserver) new view.ResizeObserver(updateDockWidth).observe(content);
   positionDock(saved?.top ?? view.innerHeight - 140);
   document.documentElement.appendChild(dock);
   render();
