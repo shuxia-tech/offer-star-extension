@@ -167,9 +167,11 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
   function ancestorFieldLabel(element: HTMLElement) {
     const widget = closestClass(element, "sd-Select") ?? closestClass(element, "sd-Input");
     let current: HTMLElement | null = element;
-    for (let depth = 0; current && depth < 12; depth += 1, current = current.parentElement) {
+    for (let depth = 0; current && current !== element.ownerDocument.body && current !== element.ownerDocument.documentElement && depth < 12; depth += 1, current = current.parentElement) {
       const previous = current.previousElementSibling;
-      if (!(previous instanceof HTMLElement) || previous.querySelector("input, textarea, select")) continue;
+      // 字段标题只能来自正文中的文本，不能把区号、候选项或操作按钮当成标题。
+      if (!previous || previous.nodeType !== 1 || previous.matches("input, textarea, select, button, a, [role=button], [role=option], [role=listbox], [role=combobox]")) continue;
+      if (previous.querySelector("input, textarea, select, button, [role=combobox], [role=option], [role=listbox]")) continue;
       if (widget?.contains(previous)) continue;
       const text = cleanLabel(previous.textContent ?? "");
       if (text && text.length <= 20 && text.length >= 2 && !/^(必填|选填|可选|请选择|请输入|提示|说明)$/.test(text)) return (previous.textContent ?? "").trim();
@@ -336,6 +338,8 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
         element.removeAttribute("data-value");
         return true;
       }
+      const searchInput = element.tagName === "INPUT" ? element as HTMLInputElement : null;
+      const previousSearch = searchInput?.value ?? "";
       await element.click();
       revealAntMenu(element);
       if (element.tagName === "INPUT") {
@@ -366,7 +370,15 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
           await new Promise<void>((resolve) => setTimeout(resolve, 25));
         }
       }
-      if (!option) return false;
+      if (!option) {
+        // 搜索文字不是已选值；未命中候选项时恢复原内容，防止重试误判成功。
+        if (searchInput) {
+          pageValueSetter(searchInput)?.call(searchInput, previousSearch);
+          const EventConstructor = ownerWindow(searchInput).Event;
+          searchInput.dispatchEvent(new EventConstructor("input", { bubbles: true }));
+        }
+        return false;
+      }
       await option.click();
       const selected = element.querySelector(".ant-select-selection-selected-value");
       if (selected) selected.textContent = cleanLabel(option.textContent ?? value);

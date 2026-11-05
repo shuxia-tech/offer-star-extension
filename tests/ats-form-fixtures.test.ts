@@ -24,7 +24,9 @@ describe("ATS 招聘系统复合表单夹具", () => {
       list.append(option);
       document.querySelector("#cities")?.replaceChildren(list);
     });
+    let additions = 0;
     document.querySelector<HTMLButtonElement>("#add-work")?.addEventListener("click", () => {
+      additions += 1;
       const wrapper = document.createElement("label");
       wrapper.textContent = "公司";
       const input = document.createElement("input");
@@ -39,6 +41,9 @@ describe("ATS 招聘系统复合表单夹具", () => {
     expect(result.failed).toEqual([]);
     expect(cityInput.value).toBe("上海");
     expect(Array.from(document.querySelectorAll<HTMLInputElement>("#work input")).map((input) => input.value)).toEqual(["甲公司", "乙公司"]);
+    await engine.fill({ targetCity: "上海", company: ["甲公司", "乙公司"] }, "overwrite");
+    expect(document.querySelectorAll("#work input")).toHaveLength(2);
+    expect(additions).toBe(1);
   });
 
   it("北森申请页的动态经历按钮没有新增区块时不会重复点击", async () => {
