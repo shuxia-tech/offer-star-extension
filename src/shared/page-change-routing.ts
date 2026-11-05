@@ -1,5 +1,6 @@
 const NON_APPLICATION_HOSTS = new Set([
   "offer.gfjianli.com",
+  "jisuhaitou.gfjianli.com",
   "gfjianli.com",
   "www.gfjianli.com",
   "open.weixin.qq.com"

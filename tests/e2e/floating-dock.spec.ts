@@ -122,11 +122,11 @@ for (const width of [1280, 320]) {
       await expect(dock).toHaveAttribute("data-state", "missing");
       await dock.hover(); await expect(page.getByRole("button", { name: "完善简历", exact: true })).toBeVisible();
       await page.screenshot({ path: test.info().outputPath(`dock-missing-${width}.png`) });
-      await context.route("https://gfjianli.com/", (route) => route.fulfill({ contentType: "text/html", body: "<title>完善简历测试页</title>" }));
+      await context.route("https://jisuhaitou.gfjianli.com/resume", (route) => route.fulfill({ contentType: "text/html", body: "<title>完善简历测试页</title>" }));
       const destination = context.waitForEvent("page");
       await page.getByRole("button", { name: "完善简历", exact: true }).click();
       const editor = await destination;
-      await expect(editor).toHaveURL("https://gfjianli.com/");
+      await expect(editor).toHaveURL("https://jisuhaitou.gfjianli.com/resume");
       expect(await editor.evaluate(() => window.opener === null)).toBe(true);
       await editor.close();
       // 模拟官网创建简历后的重试，重新读取列表，不要求用户刷新页面。

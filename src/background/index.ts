@@ -98,7 +98,7 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRe
       sendResponse({ success: true, tabId: tab.id });
     }).catch((error) => {
       console.error("[Offer Star][Background] 打开简历管理页失败", error);
-      sendResponse({ success: false, error: "无法打开简历管理页，请手动打开高分简历" });
+      sendResponse({ success: false, error: "无法打开简历管理页，请手动打开极速海投官网" });
     });
     return true;
   }
@@ -220,9 +220,7 @@ async function openOfferStarLoginWindow() {
 }
 
 async function openResumeManagePage() {
-  const { extensionToken } = await browser.storage.local.get("extensionToken") as { extensionToken?: string };
-  const token = typeof extensionToken === "string" ? extensionToken : null;
-  return browser.tabs.create({ url: buildResumeManageUrl(token) });
+  return browser.tabs.create({ url: buildResumeManageUrl() });
 }
 
 async function getResumeProfile(resumeId: string): Promise<ResumeProfile> {

@@ -425,3 +425,11 @@ button, input, select, textarea { font: inherit; }
 .offer-star-panel button.preview-value { display: inline; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 3px; background: transparent; color: inherit; font: inherit; text-align: left; white-space: inherit; overflow-wrap: anywhere; cursor: copy; box-shadow: none; user-select: text; }
 .offer-star-panel button.preview-value:hover:not(:disabled) { color: #1677ff; background: #eaf3ff; }
 .offer-star-panel button.preview-value:focus-visible { outline: 2px solid #7aacf2; outline-offset: 2px; }
+
+/* 次级填写入口与主按钮保持相同字号，窄屏也保留并排布局。 */
+.fill-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 6px; }
+.fill-tool { display: flex; align-items: center; justify-content: center; gap: 5px; min-width: 0; padding: 0 6px; border-radius: 8px; background: #eef4ff; }
+.offer-star-panel .fill-tool-action { min-width: 0; min-height: 32px; padding: 6px 0; border: 0 !important; background: transparent !important; color: var(--accent) !important; font-size: 12px; font-weight: 600; box-shadow: none; }
+.offer-star-panel .fill-tool-help { display: grid; place-items: center; flex: 0 0 17px; width: 17px; min-height: 17px; padding: 0; border: 1px solid currentColor !important; border-radius: 50%; color: #6891ce !important; font-size: 11px; line-height: 1; background: transparent !important; box-shadow: none; }
+.fill-tool:focus-within, .fill-tool:hover { background: #e3edff; }
+.fill-method-help { margin: 9px 0 0; padding: 8px 10px; color: #6d7e96; font-size: 11px; line-height: 1.7; border-radius: 7px; background: #f6f8fc; }

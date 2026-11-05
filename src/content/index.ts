@@ -1,6 +1,8 @@
+import { RESUME_PAGE_URL } from "../shared/site-links";
 import type { ExtensionMessage } from "../shared/messages";
 import { browser } from "wxt/browser";
 import { createPreviewTextFill } from "./preview-fill";
+import { createRegionSelector } from "./region-selection";
 import { createDomEngine } from "./dom-engine";
 import { extractPageContext } from "../shared/page-context";
 import { installNavigationObserver } from "../shared/navigation-observer";
@@ -16,6 +18,8 @@ import { sanitizePageUrl } from "../shared/privacy";
 import { withRequestTimeout } from "../shared/request-timeout";
 
 let engine = createDomEngine(document, location.href);
+const regionSelector = createRegionSelector(document);
+let selectedRegion: { id: string; targets: Set<HTMLElement> } | undefined;
 const previewTextFill = createPreviewTextFill(document);
 const extensionRuntime = browser.runtime as typeof browser.runtime & { getURL: (path: string) => string };
 let hasScanned = false;
@@ -42,6 +46,7 @@ const formNoticeGate = createFormNoticeGate(
 );
 
 installNavigationObserver(window, ({ url, reason }) => {
+  regionSelector.cancel(); selectedRegion = undefined;
   clearQuickFillPending();
   previewTextFill.clear();
   floatingBusy = false;
@@ -97,7 +102,7 @@ const quickFill = () => {
 
 if (location.hostname !== "offer.gfjianli.com" || location.pathname !== "/extension-login") {
   const runtimeWithUrl = browser.runtime as typeof browser.runtime & { getURL: (path: string) => string };
-  mountFloatingLauncher(document, openFloatingPanel, runtimeWithUrl.getURL("icons/icon128.png"), quickFill, () => window.open("https://gfjianli.com/", "_blank", "noopener,noreferrer"));
+  mountFloatingLauncher(document, openFloatingPanel, runtimeWithUrl.getURL("icons/icon128.png"), quickFill, () => window.open(RESUME_PAGE_URL, "_blank", "noopener,noreferrer"));
 }
 
 window.addEventListener("message", (event) => {
@@ -135,7 +140,7 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendR
   if (message.type === "FILL_FOCUSED_TEXT") {
     // 手动文字填写只接收扩展面板经后台发送的命令，网页脚本不能直接触发。
     if (_sender.id !== browser.runtime.id || !_sender.url?.startsWith(extensionRuntime.getURL(""))) {
-      sendResponse({ filled: false, error: "请从极速海投的简历预览中双击填写" });
+      sendResponse({ filled: false, error: "请从极速海投的手动填充中双击填写" });
       return false;
     }
     formNoticeGate.engage();
@@ -143,6 +148,26 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendR
     catch { sendResponse({ filled: false, error: "网页未接受这次填写，请单击复制后手动粘贴" }); }
     finally { formNoticeGate.releaseAfter(AUTOFILL_FORM_NOTICE_SETTLE_MS); }
     return false;
+  }
+  if (message.type === "SELECT_FILL_REGION") {
+    if (_sender.id !== browser.runtime.id || !_sender.url?.startsWith(extensionRuntime.getURL(""))) {
+      sendResponse({ error: "请从极速海投面板发起选区填写" }); return false;
+    }
+    const blockedReason = detectSecurityChallenge(document, location.href);
+    if (blockedReason) { sendResponse({ blockedReason }); return false; }
+    selectedRegion = undefined;
+    setFloatingPanelVisible(document, false); setFloatingLauncherVisible(document, false);
+    void regionSelector.select().then((region) => {
+      if (!region) { sendResponse({ cancelled: true }); return; }
+      selectedRegion = { id: Array.from(crypto.getRandomValues(new Uint32Array(4)), (part) => part.toString(16)).join("-"), targets: engine.captureRegion(region) };
+      sendResponse({ regionId: selectedRegion.id });
+    }).catch(() => {
+      selectedRegion = undefined; sendResponse({ error: "无法创建选区，请重新框选" });
+    }).finally(() => {
+      setFloatingPanelVisible(document, true);
+      setFloatingLauncherVisible(document, !document.getElementById("offer-star-floating-panel"));
+    });
+    return true;
   }
   if (message.type === "SCAN_PAGE") {
     const blockedReason = detectSecurityChallenge(document, location.href);
@@ -154,7 +179,10 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendR
     }
     formNoticeGate.engage();
     console.info("[Offer Star][Content] 开始扫描当前页面");
-    void engine.scanDeep().then((fields) => {
+    if (message.regionId && message.regionId !== selectedRegion?.id) {
+      formNoticeGate.releaseAfter(0); sendResponse({ fields: [], blockedReason: "选区已失效，请重新框选" }); return false;
+    }
+    void (message.regionId ? Promise.resolve(engine.scan(selectedRegion!.targets)) : engine.scanDeep()).then((fields) => {
       hasScanned = true;
       formNoticeGate.releaseAfter(AUTOFILL_FORM_NOTICE_SETTLE_MS);
       sendResponse({ fields });
@@ -174,8 +202,16 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendR
     return false;
   }
   if (message.type === "FILL_FIELDS") {
+    const blockedReason = detectSecurityChallenge(document, location.href);
+    if (blockedReason || message.regionId && message.regionId !== selectedRegion?.id) {
+      sendResponse({ filled: [], failed: [], error: blockedReason || "选区已失效，请重新框选" }); return false;
+    }
+    const scope = message.regionId ? selectedRegion!.targets : undefined;
+    if (message.regionId) selectedRegion = undefined;
     formNoticeGate.engage();
-    void engine.fill(message.values, message.mode, { debug: message.debug }).then(sendResponse).finally(() => {
+    void engine.fill(message.values, message.mode, { debug: message.debug, existingOnly: message.existingOnly, scope }).then(sendResponse).catch(() => {
+      sendResponse({ filled: [], failed: [], error: "填写失败，请重新扫描后重试" });
+    }).finally(() => {
       formNoticeGate.releaseAfter(AUTOFILL_FORM_NOTICE_SETTLE_MS);
     });
     return true;

@@ -18,6 +18,7 @@ for (const width of [1280, 320]) {
     try {
       // 拦截官网导航，只验证跳转目标，不请求真实账号或业务服务。
       await context.route("https://offer.gfjianli.com/", (route) => route.fulfill({ contentType: "text/html", body: "<title>校招信息测试页</title>" }));
+      await context.route("https://jisuhaitou.gfjianli.com/", (route) => route.fulfill({ contentType: "text/html", body: "<title>官网测试页</title>" }));
       const page = await context.newPage();
       await page.goto("http://127.0.0.1:4173/simple.html");
       await expect.poll(() => page.locator("#offer-star-floating-launcher img").evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBe(128);
@@ -27,7 +28,7 @@ for (const width of [1280, 320]) {
       await expect.poll(() => panel.locator(".brand-mark img").evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBe(128);
       const link = panel.getByRole("link", { name: "校招信息汇总" });
       const official = panel.getByRole("link", { name: "访问官网", exact: true });
-      await expect(official).toHaveAttribute("href", "https://offer.gfjianli.com/");
+      await expect(official).toHaveAttribute("href", "https://jisuhaitou.gfjianli.com/");
       await expect(panel.locator(".footer-links a")).toHaveText(["访问官网", "校招信息汇总"]);
       await expect(link).toBeVisible();
       await expect(link).toHaveAttribute("href", "https://offer.gfjianli.com/");
@@ -74,7 +75,7 @@ for (const width of [1280, 320]) {
             await entry.click();
           }
           const destination = await opened;
-          await expect(destination).toHaveURL("https://offer.gfjianli.com/");
+          await expect(destination).toHaveURL(entry === official ? "https://jisuhaitou.gfjianli.com/" : "https://offer.gfjianli.com/");
           // 两个入口都通过新标签页打开，不能操作原申请表。
           expect(await destination.evaluate(() => window.opener === null)).toBe(true);
           await destination.close();
