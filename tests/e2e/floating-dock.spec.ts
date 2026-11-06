@@ -28,10 +28,25 @@ for (const width of [1280, 320]) {
       const launcher = page.getByRole("button", { name: "打开极速海投简历助手", exact: true });
       await expect(dock).toHaveAttribute("data-expanded", "false");
       await expect.poll(async () => { const r = await dock.boundingBox(); return Math.round(r!.x + r!.width); }).toBe(width);
+      await page.evaluate(() => {
+        const sample = window as unknown as { dockWidths: number[] }; sample.dockWidths = [];
+        const end = performance.now() + 650;
+        const tick = () => { sample.dockWidths.push(document.getElementById("offer-star-floating-dock")!.getBoundingClientRect().width); if (performance.now() < end) requestAnimationFrame(tick); };
+        requestAnimationFrame(tick);
+      });
       await dock.hover();
       await expect(dock).toHaveAttribute("data-expanded", "true");
       await expect(page.getByRole("button", { name: "快捷填写", exact: true })).toBeVisible();
-      await expect.poll(async () => (await dock.boundingBox())!.width).toBe(Math.min(350, width));
+      await expect.poll(async () => (await dock.boundingBox())!.width).toBeLessThan(260);
+      await expect.poll(() => dock.evaluate((node) => Math.abs(node.getBoundingClientRect().width - Number.parseFloat(node.style.width)) < .5)).toBe(true);
+      const idleWidth = (await dock.boundingBox())!.width;
+      const widths = await page.evaluate(() => (window as unknown as { dockWidths: number[] }).dockWidths);
+      expect(widths.filter((value) => value > 50 && value < idleWidth - 5).length).toBeGreaterThan(1);
+      const logoBox = (await launcher.boundingBox())!;
+      const textBox = (await page.locator("#offer-star-floating-status").boundingBox())!;
+      const buttonBox = (await page.locator("#offer-star-floating-fill").boundingBox())!;
+      expect(logoBox.x + logoBox.width).toBeLessThanOrEqual(textBox.x);
+      expect(textBox.x + textBox.width).toBeLessThanOrEqual(buttonBox.x);
       await page.screenshot({ path: test.info().outputPath(`dock-idle-${width}.png`) });
       // 网页脚本代点不能启动填写；悬停也不会创建简历 iframe。
       await page.locator("#offer-star-floating-fill").evaluate((button) => (button as HTMLButtonElement).click());
@@ -53,6 +68,9 @@ for (const width of [1280, 320]) {
       const states = await page.evaluate(() => (window as unknown as { dockStates: string[] }).dockStates);
       expect(states).toEqual(expect.arrayContaining(["loading", "scanning", "success"]));
       await dock.hover();
+      await expect.poll(async () => (await dock.boundingBox())!.width).toBeGreaterThan(idleWidth + 20);
+      await expect.poll(() => dock.evaluate((node) => Math.abs(node.getBoundingClientRect().width - Number.parseFloat(node.style.width)) < .5)).toBe(true);
+      expect((await dock.boundingBox())!.width).toBeLessThanOrEqual(width);
       await page.screenshot({ path: test.info().outputPath(`dock-success-${width}.png`) });
       await launcher.click();
       const outer = page.locator("#offer-star-floating-panel");
@@ -104,11 +122,11 @@ for (const width of [1280, 320]) {
       await expect(dock).toHaveAttribute("data-state", "missing");
       await dock.hover(); await expect(page.getByRole("button", { name: "完善简历", exact: true })).toBeVisible();
       await page.screenshot({ path: test.info().outputPath(`dock-missing-${width}.png`) });
-      await context.route("https://gfjianli.com/", (route) => route.fulfill({ contentType: "text/html", body: "<title>完善简历测试页</title>" }));
+      await context.route("https://jisuhaitou.gfjianli.com/resume", (route) => route.fulfill({ contentType: "text/html", body: "<title>完善简历测试页</title>" }));
       const destination = context.waitForEvent("page");
       await page.getByRole("button", { name: "完善简历", exact: true }).click();
       const editor = await destination;
-      await expect(editor).toHaveURL("https://gfjianli.com/");
+      await expect(editor).toHaveURL("https://jisuhaitou.gfjianli.com/resume");
       expect(await editor.evaluate(() => window.opener === null)).toBe(true);
       await editor.close();
       // 模拟官网创建简历后的重试，重新读取列表，不要求用户刷新页面。

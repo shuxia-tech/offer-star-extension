@@ -71,11 +71,11 @@ for (const width of [1280, 320]) {
       await expect(panel.locator(".application-stat strong").first()).toHaveText("2");
       await panel.getByRole("button", { name: "关闭悬浮面板" }).click();
       await page.getByRole("button", { name: "打开极速海投简历助手" }).click();
-      // 修改简历固定跳到用户指定的首页，不传递登录凭证。
-      await context.route("https://gfjianli.com/", (route) => route.fulfill({ contentType: "text/html", body: "<title>修改简历测试页</title>" }));
-      await panel.getByRole("tab", { name: "简历预览", exact: true }).click();
+      // 修改简历固定跳到用户指定的简历页，不传递登录凭证。
+      await context.route("https://jisuhaitou.gfjianli.com/resume", (route) => route.fulfill({ contentType: "text/html", body: "<title>修改简历测试页</title>" }));
+      await panel.getByRole("tab", { name: "手动填充", exact: true }).click();
       const edit = panel.getByRole("link", { name: "修改简历", exact: true });
-      await expect(edit).toHaveAttribute("href", "https://gfjianli.com/");
+      await expect(edit).toHaveAttribute("href", "https://jisuhaitou.gfjianli.com/resume");
       await expect(edit).toBeVisible();
       await expect(panel.locator("details.preview-section")).toHaveCount(6);
       await expect(panel.locator("details.preview-section[open]")).toHaveCount(0);
@@ -94,12 +94,18 @@ for (const width of [1280, 320]) {
       const editDestination = context.waitForEvent("page");
       await edit.click();
       const editPage = await editDestination;
-      await expect(editPage).toHaveURL("https://gfjianli.com/");
+      await expect(editPage).toHaveURL("https://jisuhaitou.gfjianli.com/resume");
       expect(await editPage.evaluate(() => window.opener === null)).toBe(true);
       await editPage.close();
+      const manageDestination = context.waitForEvent("page");
+      await panel.getByRole("button", { name: "管理简历", exact: true }).click();
+      const managePage = await manageDestination;
+      await expect(managePage).toHaveURL("https://jisuhaitou.gfjianli.com/resume");
+      await managePage.close();
+      await page.bringToFront();
       await panel.getByRole("tab", { name: "自动填充", exact: true }).click();
       await panel.getByRole("button", { name: "马上邀请" }).click();
-      await expect(panel.getByRole("textbox", { name: "邀请链接" })).toHaveValue("https://offer.gfjianli.com/?invitationCode=TEST123");
+      await expect(panel.getByRole("textbox", { name: "邀请链接" })).toHaveValue("https://jisuhaitou.gfjianli.com/?invitationCode=TEST123");
       await expect(panel.getByRole("button", { name: "复制邀请链接" })).toBeVisible();
       const frame = page.frames().find((item) => item.url().includes("floating-panel.html"))!;
       // 测试复制成功和浏览器拒绝时的提示，不改写系统剪贴板。
@@ -109,7 +115,7 @@ for (const width of [1280, 320]) {
       await frame.evaluate(() => Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => { (window as unknown as { copiedInvite: string }).copiedInvite = value; } } }));
       await panel.getByRole("button", { name: "复制邀请链接" }).click();
       await expect(panel.getByRole("region", { name: "分享邀请链接" })).toContainText("邀请链接已复制");
-      expect(await frame.evaluate(() => (window as unknown as { copiedInvite: string }).copiedInvite)).toBe("https://offer.gfjianli.com/?invitationCode=TEST123");
+      expect(await frame.evaluate(() => (window as unknown as { copiedInvite: string }).copiedInvite)).toBe("https://jisuhaitou.gfjianli.com/?invitationCode=TEST123");
       await page.screenshot({ path: test.info().outputPath(`panel-invite-${width}.png`) });
       await panel.getByRole("button", { name: "关闭邀请" }).click();
 

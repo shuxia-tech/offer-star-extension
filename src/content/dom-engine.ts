@@ -1,3 +1,4 @@
+import { isInsideRegion, type FillRegion } from "./region-selection";
 import type { DetectedField, FieldValue, FilePayload } from "../shared/messages";
 import { guessFieldKey, isBlockedActionLabel, isConsentLabel, isPhoneFieldLabel, sectionAddKeys, sectionKeysFromTitle, shouldFillExistingValue } from "../shared/field-matching";
 import { blockedActionTerms, sectionAddRules } from "../shared/field-catalog";
@@ -25,10 +26,14 @@ export type ScanDebugSnapshot = {
   clickedAdds: string[];
 };
 
+/** existingOnly 禁止新增或确认区块；scope 锁定框选时的控件实例，不能退回全页填写。 */
+export type FillOptions = { debug?: boolean; existingOnly?: boolean; scope?: ReadonlySet<HTMLElement> };
+
 export type DomEngine = {
-  scan(): DetectedField[];
+  captureRegion(region: FillRegion): Set<HTMLElement>;
+  scan(scope?: ReadonlySet<HTMLElement>): DetectedField[];
   scanDeep(): Promise<DetectedField[]>;
-  fill(values: Record<string, FieldValue>, mode: "incremental" | "overwrite", options?: { debug?: boolean }): Promise<{ filled: string[]; failed: string[]; failureReasons: Record<string, string>; debug?: ScanDebugSnapshot }>;
+  fill(values: Record<string, FieldValue>, mode: "incremental" | "overwrite", options?: FillOptions): Promise<{ filled: string[]; failed: string[]; failureReasons: Record<string, string>; debug?: ScanDebugSnapshot }>;
   undo(): Promise<{ restored: string[] }>;
   advanceStep(): Promise<{ advanced: boolean; label?: string }>;
   fillPhoto(dataUrl: string, fileName: string, mimeType: string): Promise<{ filled: boolean }>;
@@ -163,9 +168,11 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
   function ancestorFieldLabel(element: HTMLElement) {
     const widget = closestClass(element, "sd-Select") ?? closestClass(element, "sd-Input");
     let current: HTMLElement | null = element;
-    for (let depth = 0; current && depth < 12; depth += 1, current = current.parentElement) {
+    for (let depth = 0; current && current !== element.ownerDocument.body && current !== element.ownerDocument.documentElement && depth < 12; depth += 1, current = current.parentElement) {
       const previous = current.previousElementSibling;
-      if (!(previous instanceof HTMLElement) || previous.querySelector("input, textarea, select")) continue;
+      // 字段标题只能来自正文中的文本，不能把区号、候选项或操作按钮当成标题。
+      if (!previous || previous.nodeType !== 1 || previous.matches("input, textarea, select, button, a, [role=button], [role=option], [role=listbox], [role=combobox]")) continue;
+      if (previous.querySelector("input, textarea, select, button, [role=combobox], [role=option], [role=listbox]")) continue;
       if (widget?.contains(previous)) continue;
       const text = cleanLabel(previous.textContent ?? "");
       if (text && text.length <= 20 && text.length >= 2 && !/^(必填|选填|可选|请选择|请输入|提示|说明)$/.test(text)) return (previous.textContent ?? "").trim();
@@ -215,9 +222,10 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     return group.querySelector<HTMLElement>("textarea, input.ant-calendar-picker-input, input.ant-input:not([disabled]):not([type=hidden]), input:not([disabled]):not([type=hidden]):not([type=radio]):not([type=checkbox])");
   }
 
-  function scan() {
+  function scan(scope?: ReadonlySet<HTMLElement>) {
     const adapter = getSiteAdapter(pageUrl);
-    const result = controls().map((element, elementIndex) => {
+    const elements = controls();
+    const result = elements.map((element, elementIndex) => {
       const label = labelFor(element);
       const scoped = scopedFieldKey(element);
       const guess = scoped ? { key: scoped, confidence: 0.95 } : guessFieldKey(label);
@@ -226,7 +234,12 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
       return { id, key: guess.key, label, type: element.tagName.toLowerCase(), elementIndex, confidence: guess.confidence };
     });
     console.info("[Offer Star][Content] 页面扫描完成", { 站点: adapter.name, 字段数量: result.length, 页面地址: sanitizePageUrl(pageUrl) });
-    return result;
+    return scope ? result.filter((field) => scope.has(elements[field.elementIndex])) : result;
+  }
+
+  function captureRegion(region: FillRegion) {
+    const candidates = [...controls(), ...dateSections().flatMap((section) => [...section.inputs, tillNowCheckbox(section.root)].filter((item): item is HTMLElement => Boolean(item)))];
+    return new Set(candidates.filter((element) => isInsideRegion(element, region)));
   }
 
   /** 以有限次数触发页面懒加载，完成后恢复用户滚动位置。 */
@@ -253,11 +266,11 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     return scan();
   }
 
-  async function setValue(element: HTMLElement, value: string): Promise<boolean> {
+  async function setValue(element: HTMLElement, value: string, allowed?: ReadonlySet<HTMLElement>): Promise<boolean> {
     if (element.tagName === "INPUT" && ["radio", "checkbox"].includes((element as HTMLInputElement).type)) {
       const input = element as HTMLInputElement;
       if (input.type === "radio") {
-        const named = input.name ? queryAllDeep<HTMLInputElement>("input[type=radio]").filter((item) => item.name === input.name) : [];
+        const named = input.name ? queryAllDeep<HTMLInputElement>("input[type=radio]").filter((item) => item.name === input.name && item.ownerDocument === input.ownerDocument && item.form === input.form) : [];
         const scope = input.closest(".ant-radio-group, [role=radiogroup], fieldset, .field-group");
         const group = named.length ? named : scope ? Array.from(scope.querySelectorAll<HTMLInputElement>("input[type=radio]")) : [input];
         if (!value) {
@@ -269,7 +282,8 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
           const text = `${item.value} ${item.closest("label")?.textContent ?? ""}`.replace(/\s+/g, "");
           return item.value === value || text.includes(wanted);
         });
-        if (!target) return false;
+        if (!target || allowed && !allowed.has(target)) return false;
+        if (allowed && group.some((item) => item.checked && !allowed.has(item))) return false;
         target.checked = true;
         const EventConstructor = ownerWindow(target).Event;
         target.dispatchEvent(new EventConstructor("input", { bubbles: true }));
@@ -326,6 +340,8 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
         element.removeAttribute("data-value");
         return true;
       }
+      const searchInput = element.tagName === "INPUT" ? element as HTMLInputElement : null;
+      const previousSearch = searchInput?.value ?? "";
       await element.click();
       revealAntMenu(element);
       if (element.tagName === "INPUT") {
@@ -356,7 +372,15 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
           await new Promise<void>((resolve) => setTimeout(resolve, 25));
         }
       }
-      if (!option) return false;
+      if (!option) {
+        // 搜索文字不是已选值；未命中候选项时恢复原内容，防止重试误判成功。
+        if (searchInput) {
+          pageValueSetter(searchInput)?.call(searchInput, previousSearch);
+          const EventConstructor = ownerWindow(searchInput).Event;
+          searchInput.dispatchEvent(new EventConstructor("input", { bubbles: true }));
+        }
+        return false;
+      }
       await option.click();
       const selected = element.querySelector(".ant-select-selection-selected-value");
       if (selected) selected.textContent = cleanLabel(option.textContent ?? value);
@@ -969,8 +993,17 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     return picked.length > 4 ? picked.slice(0, 4) : picked;
   }
 
-  async function fillDateSection(section: { kind: string; row: number; root: HTMLElement; inputs: HTMLElement[] }, values: Record<string, FieldValue>) {
+  async function fillDateSection(section: { kind: string; row: number; root: HTMLElement; inputs: HTMLElement[] }, values: Record<string, FieldValue>, mode: "incremental" | "overwrite", options: FillOptions | undefined, filled: string[]) {
+    const canWrite = (element: HTMLElement | undefined) => Boolean(element && element.isConnected && !(element as HTMLInputElement).disabled && (!options?.scope || options.scope.has(element)) && shouldFillExistingValue(mode, currentValue(element)));
     const { start: startKey, end: endKey } = dateKeyPair(section.kind);
+    const assign = async (element: HTMLElement | undefined, value: string) => {
+      if (!canWrite(element)) return true;
+      const before = currentValue(element!);
+      const ok = await assignChoice(element, value);
+      const key = section.inputs.indexOf(element!) < 2 ? startKey : endKey;
+      if (ok && currentValue(element!) !== before && !filled.includes(key)) filled.push(key);
+      return ok;
+    };
     const start = dateParts(valueAt(values[startKey], section.row));
     const endValue = valueAt(values[endKey], section.row).trim();
     const endOpen = isOpenEndedDate(endValue);
@@ -978,15 +1011,16 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     const till = tillNowCheckbox(section.root);
     let ok = true;
     if (start) {
-      if (!(await assignChoice(section.inputs[0], start.year))) ok = false;
-      if (start.month && section.inputs[1] && !(await assignChoice(section.inputs[1], start.month))) ok = false;
+      if (!(await assign(section.inputs[0], start.year))) ok = false;
+      if (start.month && section.inputs[1] && !(await assign(section.inputs[1], start.month))) ok = false;
     }
-    if (endOpen && till) {
+    if (endOpen && till && canWrite(till)) {
       setChecked(till, true);
+      if (!filled.includes(endKey)) filled.push(endKey);
     } else if (end && section.inputs[2]) {
-      if (till?.checked) setChecked(till, false);
-      if (!(await assignChoice(section.inputs[2], end.year))) ok = false;
-      if (end.month && section.inputs[3] && !(await assignChoice(section.inputs[3], end.month))) ok = false;
+      if (till?.checked && canWrite(till)) setChecked(till, false);
+      if (!(await assign(section.inputs[2], end.year))) ok = false;
+      if (end.month && section.inputs[3] && !(await assign(section.inputs[3], end.month))) ok = false;
     }
     return ok;
   }
@@ -1232,7 +1266,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     return 0;
   }
 
-  async function writeFields(values: Record<string, FieldValue>, mode: "incremental" | "overwrite", filled: string[], failed: string[], failureReasons: Record<string, string>, only?: Set<string>, overwriteRepeated = false) {
+  async function writeFields(values: Record<string, FieldValue>, mode: "incremental" | "overwrite", filled: string[], failed: string[], failureReasons: Record<string, string>, only?: Set<string>, overwriteRepeated = false, options?: FillOptions) {
     const misses: string[] = [];
     const seen = new Map<string, number>();
     const degreeCount = scan().filter((item) => item.key === "degree").length;
@@ -1250,7 +1284,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
       const { start: startKey, end: endKey } = dateKeyPair(section.kind);
       seen.set(startKey, (seen.get(startKey) ?? 0) + 1);
       seen.set(endKey, (seen.get(endKey) ?? 0) + 1);
-      const filledDate = await fillDateSection(section, values);
+      const filledDate = await fillDateSection(section, values, mode, options, filled);
       if (!filledDate) {
         const failedKey = `${startKey}[${section.row + 1}]`;
         failed.push(failedKey);
@@ -1288,7 +1322,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
         seen.set(endKey, (seen.get(endKey) ?? 0) + 1);
         if ((!only || dateSectionSelected(section, only)) && !started.has(section.root)) {
           started.add(section.root);
-          const filledDate = await fillDateSection(section, values);
+          const filledDate = await fillDateSection(section, values, mode, options, filled);
           if (!filledDate) {
             const failedKey = `${startKey}[${section.row + 1}]`;
             failed.push(failedKey);
@@ -1303,6 +1337,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
       const key = item.field.key;
       if (key === "projectDescription" && skipProjectDuty && isProjectDutyField(item.element)) continue;
       const occurrence = occurrenceFor(key, item.element);
+      if (options?.scope && !options.scope.has(item.element)) continue;
       const raw = values[key];
       const listed = Array.isArray(raw) ? raw : [raw];
       const text = key === "degree" && degreeCount <= 1
@@ -1317,18 +1352,25 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
         failureReasons[failedKey] = validationError;
         continue;
       }
-      const element = item.element.isConnected ? item.element : liveControl(key, occurrence);
+      const element = item.element.isConnected ? item.element : options?.scope || options?.existingOnly ? undefined : liveControl(key, occurrence);
       if (!element?.isConnected) {
         failed.push(failedKey);
         failureReasons[failedKey] = "没有找到对应页面控件";
         misses.push(failedKey);
         continue;
       }
+      if (isNoiseControl(element)) continue;
+      // 已选择的单选组必须整体保留，不能从另一个尚未选中的选项改写它。
+      if (mode === "incremental" && (element.matches("input[type=radio], [role=radio]"))) {
+        const input = element as HTMLInputElement;
+        const group = input.name ? queryAllDeep<HTMLInputElement>("input[type=radio]").filter((item) => item.name === input.name && item.ownerDocument === element.ownerDocument && item.form === input.form) : Array.from(element.closest("[role=radiogroup], fieldset, .ant-radio-group")?.querySelectorAll<HTMLElement>("[role=radio], input[type=radio]") ?? [element]);
+        if (group.some((item) => currentValue(item).trim())) continue;
+      }
       const previousValue = currentValue(element);
       if (previousValue && committedValueMatches(previousValue, text)) continue;
       const forceRepeated = overwriteRepeated && repeatedKeys.has(key);
       if (previousValue && !forceRepeated && !shouldFillExistingValue(mode, previousValue)) continue;
-      if (await setValue(element, text)) {
+      if (await setValue(element, text, options?.scope)) {
         fillHistory.add({ target: element, value: previousValue });
         filled.push(key);
       } else {
@@ -1338,6 +1380,7 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
       }
     }
     for (const [key, raw] of Object.entries(values)) {
+      if (options?.existingOnly || options?.scope) continue;
       if (key === "photo" || key === "attachment" || seen.has(key)) continue;
       if (scan().some((item) => item.key === key)) continue;
       const present = Array.isArray(raw) ? raw.some((entry) => String(entry ?? "").trim()) : String(raw ?? "").trim();
@@ -1374,15 +1417,16 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     for (const button of buttons) await button.click();
   }
 
-  async function fill(values: Record<string, FieldValue>, mode: "incremental" | "overwrite", options?: { debug?: boolean }) {
+  async function fill(values: Record<string, FieldValue>, mode: "incremental" | "overwrite", options?: FillOptions) {
     const filled: string[] = [];
     const failed: string[] = [];
     const failureReasons: Record<string, string> = {};
     const clickedAdds: string[] = [];
     fillHistory.reset();
-    await expandRepeatedSections(values, clickedAdds);
-    const misses = await writeFields(values, mode, filled, failed, failureReasons);
-    const added = await expandRepeatedSections(values, clickedAdds);
+    const restricted = options?.existingOnly || Boolean(options?.scope);
+    if (!restricted) await expandRepeatedSections(values, clickedAdds);
+    const misses = await writeFields(values, mode, filled, failed, failureReasons, undefined, false, options);
+    const added = restricted ? 0 : await expandRepeatedSections(values, clickedAdds);
     if (misses.length || added) {
       if (added) {
         failed.splice(0, failed.length);
@@ -1394,10 +1438,10 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
           delete failureReasons[miss];
         }
       }
-      await writeFields(values, mode, filled, failed, failureReasons, added ? undefined : new Set(misses), added > 0);
+      await writeFields(values, mode, filled, failed, failureReasons, added ? undefined : new Set(misses), added > 0, options);
     }
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    await confirmEditedSegments();
+    if (!restricted) await confirmEditedSegments();
     if (failed.length) console.warn("[Offer Star][Content] 填写失败明细", { 失败数量: failed.length });
     return {
       filled,
@@ -1558,5 +1602,5 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     input.dispatchEvent(new EventConstructor("change", { bubbles: true }));
   }
 
-  return { scan, scanDeep, fill, undo, advanceStep, fillPhoto, fillFiles };
+  return { captureRegion, scan, scanDeep, fill, undo, advanceStep, fillPhoto, fillFiles };
 }

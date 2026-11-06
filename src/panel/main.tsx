@@ -27,6 +27,7 @@ import { getMembershipStatus } from "../shared/membership";
 import type { FloatingFillState } from "../shared/floating-state";
 import { ResumePreview, ResumePreviewSkeleton } from "./resume-preview";
 import { buildScanDebug, ScanDebugPanel, showScanDebug, type ScanDebugReport } from "./scan-debug";
+import { OFFICIAL_SITE_URL, RESUME_PAGE_URL } from "../shared/site-links";
 import "./styles.css";
 
 /** 将浏览器消息异常转换为用户可以直接采取行动的中文提示。 */
@@ -74,6 +75,7 @@ function App() {
   const fallbackTabId = Number(new URLSearchParams(window.location.search).get("tabId"));
   const [fields, setFields] = useState<DetectedField[]>([]);
   const [phase, setPhase] = useState<"ready" | "scanning" | "review" | "confirm" | "filling" | "done">("ready");
+  const [fillHelp, setFillHelp] = useState<"incremental" | "region" | null>(null);
   const [fillMode, setFillMode] = useState<"incremental" | "overwrite">("incremental");
   const [message, setMessage] = useState("打开申请页面后，先扫描当前页面");
   const [resumes, setResumes] = useState<ResumeSummary[]>([]);
@@ -504,15 +506,15 @@ function App() {
     }
   }
 
-  async function autofillPage() {
+  async function autofillPage(kind: "all" | "incremental" | "region" = "all") {
     if (autofillBusyRef.current) return;
     autofillBusyRef.current = true;
     setDockState("loading");
-    try { await runAutofillPage(); }
+    try { await runAutofillPage(kind); }
     finally { autofillBusyRef.current = false; }
   }
 
-  async function runAutofillPage() {
+  async function runAutofillPage(kind: "all" | "incremental" | "region") {
     if (authState !== "signed-in") {
       setDockState("login");
       await openOfferStarLogin();
@@ -539,8 +541,17 @@ function App() {
     try {
       const tab = await getTargetTab();
       if (!tab.id) { setDockState("error"); setPhase("ready"); setMessage("无法访问当前页面"); return; }
+      let regionId: string | undefined;
+      if (kind === "region") {
+        setMessage("请在网页上拖动框选需要填写的区域，按 Esc 取消");
+        const selection = await sendToPage(tab.id, { type: "SELECT_FILL_REGION" });
+        if (selection?.cancelled) { setDockState("idle"); setPhase("ready"); setMessage("已取消选区填写"); return; }
+        if (selection?.blockedReason) { setDockState("blocked"); setPhase("ready"); setSecurityBlocked(true); setMessage(selection.blockedReason); return; }
+        if (selection?.error || !selection?.regionId) throw new Error(selection?.error || "未能获取选区，请重试");
+        regionId = selection.regionId;
+      }
       setDockState("scanning");
-      const scan = await sendToPage(tab.id, { type: "SCAN_PAGE" });
+      const scan = await sendToPage(tab.id, { type: "SCAN_PAGE", regionId });
       if (scan?.blockedReason) {
         setDockState("blocked");
         setPhase("ready");
@@ -557,7 +568,8 @@ function App() {
       const recognized = scanned.filter((field) => field.key).length;
       const hasResumeValue = Object.values(values).some((value) => Array.isArray(value) ? value.some((item) => String(item).trim()) : String(value ?? "").trim());
       setDockState("filling");
-      const result = await sendToPage(tab.id, { type: "FILL_FIELDS", values, mode: "incremental", debug: showScanDebug });
+      const result = await sendToPage(tab.id, { type: "FILL_FIELDS", values, mode: "incremental", debug: showScanDebug, existingOnly: kind !== "all", regionId });
+      if (result?.error) throw new Error(result.error);
       if (showScanDebug) {
         setScanDebug(buildScanDebug({
           scanned,
@@ -582,11 +594,11 @@ function App() {
         const next = current + 2;
         await browser.storage.local.set({ autofillMinutesSaved: next });
         setMinutesSaved(next);
-        setMessage("已填入当前页面，请核对后再手动提交");
+        setMessage(kind === "region" ? "已填入选中区域，请核对后再手动提交" : kind === "incremental" ? "已补全空白输入框，已有内容保持不变" : "已填入当前页面，请核对后再手动提交");
       } else if (recognized === 0) {
-        setMessage("没有识别到可填写的输入框，请先展开申请表");
+        setMessage(kind === "region" ? "选区内没有识别到可填写的输入框，请重新框选" : "没有识别到可填写的输入框，请先展开申请表");
       } else if (!hasResumeValue) {
-        setMessage("简历里没有能对上的内容，请先打开简历预览确认");
+        setMessage("简历里没有能对上的内容，请先打开手动填充确认简历内容");
       } else if (failedCount > 0) {
         setMessage("识别到了表单，但页面没有接住填写，请再试一次");
       } else {
@@ -913,7 +925,7 @@ function App() {
       <div className="brand-lockup"><div className="brand-mark"><img src="/icons/icon128.png" alt="" /></div><div><h2>极速海投</h2><span>简历填写助手</span></div></div>
       {authState === "signed-in" ? <section className="header-account" aria-label="当前登录用户">
         {userProfile?.avatar && !avatarFailed ? <img className="account-avatar" src={userProfile.avatar} alt="" onError={() => setAvatarFailed(true)} /> : <span className="account-avatar account-avatar-fallback">{userInitial}</span>}
-        <span className="account-copy"><strong title={userProfile?.nickname}>{userProfile?.nickname || "已登录"}</strong><a className={`membership-badge membership-${membership}`} href="https://offer.gfjianli.com/" target="_blank" rel="noopener noreferrer" title={membership === "free" ? "前往官网开通会员" : membership === "unknown" ? "会员信息暂未获取，可前往官网确认" : "前往官网查看会员详情"}>{membership === "vip" || membership === "lifetime" ? <PanelIcon name="crown" /> : null}{membershipLabel}</a></span>
+        <span className="account-copy"><strong title={userProfile?.nickname}>{userProfile?.nickname || "已登录"}</strong><a className={`membership-badge membership-${membership}`} href={OFFICIAL_SITE_URL} target="_blank" rel="noopener noreferrer" title={membership === "free" ? "前往官网开通会员" : membership === "unknown" ? "会员信息暂未获取，可前往官网确认" : "前往官网查看会员详情"}>{membership === "vip" || membership === "lifetime" ? <PanelIcon name="crown" /> : null}{membershipLabel}</a></span>
         <button className="account-action account-logout" type="button" onClick={() => void clearExtensionToken()}>退出</button>
       </section> : null}
       {embedded ? <button className="panel-close-button" type="button" aria-label="关闭悬浮面板" onClick={() => window.parent.postMessage({ type: "OFFER_STAR_CLOSE_FLOATING_PANEL" }, "*")}>×</button> : null}
@@ -927,7 +939,7 @@ function App() {
 
     <div className={`panel-tabs${showScanDebug ? " panel-tabs-debug" : ""}`} role="tablist" aria-label="插件功能">
       <button type="button" role="tab" aria-selected={panelTab === "fill"} className={panelTab === "fill" ? "tab-active" : ""} onClick={() => setPanelTab("fill")}>自动填充</button>
-      <button type="button" role="tab" aria-selected={panelTab === "preview"} className={panelTab === "preview" ? "tab-active" : ""} onClick={() => setPanelTab("preview")}>简历预览</button>
+      <button type="button" role="tab" aria-selected={panelTab === "preview"} className={panelTab === "preview" ? "tab-active" : ""} onClick={() => setPanelTab("preview")}>手动填充</button>
       {showScanDebug ? <button type="button" role="tab" aria-selected={panelTab === "scan"} className={panelTab === "scan" ? "tab-active" : ""} onClick={() => setPanelTab("scan")}>扫描结果</button> : null}
     </div>
 
@@ -944,12 +956,19 @@ function App() {
           {phase === "filling" ? <span className="fill-spinner" aria-hidden="true" /> : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" /></svg>}
           {phase === "filling" ? "正在填写…" : authState === "signed-in" ? "自动填充此页面" : loginPending ? "正在打开…" : "微信扫码登录"}
         </button>
+        {authState === "signed-in" ? <><div className="fill-tools" aria-label="更多填写方式">
+          {(["incremental", "region"] as const).map((kind) => <div className="fill-tool" key={kind}>
+            <button type="button" className="fill-tool-action" onClick={() => void autofillPage(kind)} disabled={phase === "filling" || loginPending}>{kind === "incremental" ? "增量填写" : "选区填写"}</button>
+            <button type="button" className="fill-tool-help" aria-label={kind === "incremental" ? "增量填写说明" : "选区填写说明"} aria-expanded={fillHelp === kind} aria-controls="fill-method-help" onClick={() => setFillHelp(fillHelp === kind ? null : kind)}>?</button>
+          </div>)}
+        </div>
+        {fillHelp ? <p className="fill-method-help" id="fill-method-help" role="note">{fillHelp === "incremental" ? "保留已有内容，重新检测页面，只匹配简历填写新增或空白的输入框。" : "点击后在网页上拖动框选，松开后匹配简历填写区域内的空白输入框。按 Esc 可取消。"}</p> : null}</> : null}
         {authState !== "signed-in" && authState !== "checking" ? <button className="fill-refresh" type="button" onClick={() => void refreshWebsiteLogin()}>我已登录</button> : null}
       </div>
     </section> : <section className="resume-card" aria-busy={authState === "checking"}>
       <aside className="preview-fill-guide" aria-label="快捷填写说明"><span className="preview-guide-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><rect x="6" y="6" width="12" height="16" rx="6"/><path d="M12 6v5M12 1v2M5 3l2 2m12-2-2 2"/></svg></span><div><strong>单击复制，双击填入</strong><p>选中网页输入框，再双击下方信息</p></div></aside>
       {previewFeedback?<p className="preview-feedback" role="status">{previewFeedback}</p>:null}
-      <div className="section-heading preview-heading"><strong>使用哪份简历</strong><a className="resume-edit-link" href="https://gfjianli.com/" target="_blank" rel="noopener noreferrer"><PanelIcon name="edit" />修改简历</a></div>
+      <div className="section-heading preview-heading"><strong>使用哪份简历</strong><a className="resume-edit-link" href={RESUME_PAGE_URL} target="_blank" rel="noopener noreferrer"><PanelIcon name="edit" />修改简历</a></div>
       {authState === "checking" ? <div className="resume-loading" role="status" aria-label="正在加载简历"><div className="loading-copy"><strong>正在读取简历</strong><span>请稍候</span></div><span className="loading-bar" /></div> : null}
       {authState === "checking" ? null : resumes.length ? <div className="resume-picker" ref={resumePickerRef}>
         <button type="button" className="resume-picker-trigger" aria-expanded={resumeMenuOpen} aria-haspopup="listbox" onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setResumeMenuOpen(false); } else if (event.key === "ArrowDown") { event.preventDefault(); setResumeMenuOpen(true); setResumeFocusIndex(0); } else if (event.key === "ArrowUp") { event.preventDefault(); setResumeMenuOpen(true); setResumeFocusIndex(Math.max(0, resumes.length - 1)); } }} onClick={() => setResumeMenuOpen((open) => !open)}>
@@ -979,7 +998,7 @@ function App() {
       <footer className="panel-footer">
       {inviteOpen && authState === "signed-in" ? <section className="footer-help invite-share" aria-label="分享邀请链接">
         <div className="footer-help-heading"><h3>邀请好友，双方有礼</h3><button type="button" aria-label="关闭邀请" onClick={() => setInviteOpen(false)}>×</button></div>
-        {inviteLink ? <><p>每成功邀请 1 位好友，双方各得 1 天 VIP。</p><input aria-label="邀请链接" readOnly value={inviteLink} onFocus={(event) => event.currentTarget.select()} /><button type="button" className="invite-copy" onClick={() => void copyInviteLink()}>复制邀请链接</button></> : <><p>暂未获取到邀请链接，请前往官网点击“邀请好友”获取。</p><a href="https://offer.gfjianli.com/" target="_blank" rel="noopener noreferrer">前往官网获取邀请链接<PanelIcon name="external" /></a></>}
+        {inviteLink ? <><p>每成功邀请 1 位好友，双方各得 1 天 VIP。</p><input aria-label="邀请链接" readOnly value={inviteLink} onFocus={(event) => event.currentTarget.select()} /><button type="button" className="invite-copy" onClick={() => void copyInviteLink()}>复制邀请链接</button></> : <><p>暂未获取到邀请链接，请前往官网点击“邀请好友”获取。</p><a href={OFFICIAL_SITE_URL} target="_blank" rel="noopener noreferrer">前往官网获取邀请链接<PanelIcon name="external" /></a></>}
         {inviteFeedback ? <p role="status">{inviteFeedback}</p> : null}
       </section> : null}
       {supportOpen ? <section className="footer-help footer-support" id="panel-support" aria-label="联系客服">
@@ -997,7 +1016,7 @@ function App() {
         <p>页面未出现助手时，请刷新网页；遇到验证码请先手动完成。</p>
       </section> : null}
       <nav className="footer-links" aria-label="官网与校招入口">
-        <a className="campus-jobs-link" href="https://offer.gfjianli.com/" target="_blank" rel="noopener noreferrer" title="访问官网（新标签页）"><PanelIcon name="home" />访问官网</a>
+        <a className="campus-jobs-link" href={OFFICIAL_SITE_URL} target="_blank" rel="noopener noreferrer" title="访问官网（新标签页）"><PanelIcon name="home" />访问官网</a>
         <a className="campus-jobs-link" href="https://offer.gfjianli.com/" target="_blank" rel="noopener noreferrer" title="打开校招信息汇总（新标签页）"><PanelIcon name="document" />校招信息汇总</a>
       </nav>
       <span className="footer-version" aria-label={`当前版本 ${extensionVersion}`}>v{extensionVersion}版本</span>

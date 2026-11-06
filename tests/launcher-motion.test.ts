@@ -45,15 +45,17 @@ afterEach(() => {
 
 describe("悬浮入口循环动效与长按拖动", () => {
   it("静置时仅图标播放动效，交互和忙碌时停止", () => {
-    expect(motions[0].target).toBe(launcher.querySelector("img"));
+    expect(motions[0].target).toBe(launcher.querySelector("#offer-star-floating-plane"));
     expect(dock.dataset.motion).toBe("running");
-    expect(dock.style.flexDirection).toBe("row-reverse");
+    expect(dock.style.flexDirection).toBe("row");
     dock.dispatchEvent(new MouseEvent("mouseenter"));
     expect(dock.dataset.expanded).toBe("true"); expect(motions[0].cancel).toHaveBeenCalled();
     dock.dispatchEvent(new MouseEvent("mouseleave"));
+    expect(dock.dataset.motion).toBe("paused");
+    vi.advanceTimersByTime(350);
     expect(dock.dataset.motion).toBe("running");
     setFloatingFillState(document, "scanning"); expect(dock.dataset.motion).toBe("paused");
-    setFloatingFillState(document, "idle"); expect(dock.dataset.motion).toBe("running");
+    setFloatingFillState(document, "idle"); vi.advanceTimersByTime(350); expect(dock.dataset.motion).toBe("running");
   });
   it("后台、隐藏及减少动态效果偏好均暂停，恢复时重新播放", () => {
     visibility = true; document.dispatchEvent(new Event("visibilitychange")); expect(dock.dataset.motion).toBe("paused");
@@ -66,6 +68,7 @@ describe("悬浮入口循环动效与长按拖动", () => {
   it("长按三百毫秒进入拖动态，释放不误打开，下一次单击正常", () => {
     send("pointerdown"); vi.advanceTimersByTime(299); expect(dock.dataset.dragging).toBe("pending");
     vi.advanceTimersByTime(1); expect(dock.dataset.dragging).toBe("true"); expect(launcher.style.cursor).toBe("grabbing");
+    expect(document.getElementById("offer-star-launcher-drag-shield")).not.toBeNull();
     expect(dock.dataset.expanded).toBe("false"); expect(dock.dataset.motion).toBe("paused");
     send("pointerup"); launcher.click(); expect(open).not.toHaveBeenCalled();
     send("pointerdown"); send("pointerup"); launcher.click(); expect(open).toHaveBeenCalledOnce();
@@ -101,6 +104,7 @@ describe("悬浮入口循环动效与长按拖动", () => {
       send("pointerdown"); vi.advanceTimersByTime(300);
       if (type === "blur") window.dispatchEvent(new Event("blur")); else send(type);
       expect(dock.dataset.dragging).toBe("false"); expect(launcher.style.cursor).toBe("grab");
+      expect(document.getElementById("offer-star-launcher-drag-shield")).toBeNull();
       launcher.click(); expect(open).not.toHaveBeenCalled();
     }
   });

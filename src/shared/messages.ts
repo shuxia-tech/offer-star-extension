@@ -113,9 +113,10 @@ export type AiAnalysisResult = {
 };
 
 export type PageCommand =
-  | { type: "SCAN_PAGE" }
+  | { type: "SELECT_FILL_REGION" }
+  | { type: "SCAN_PAGE"; regionId?: string }
   | { type: "FILL_FOCUSED_TEXT"; value: string }
-  | { type: "FILL_FIELDS"; values: Record<string, FieldValue>; mode: "incremental" | "overwrite"; debug?: boolean }
+  | { type: "FILL_FIELDS"; values: Record<string, FieldValue>; mode: "incremental" | "overwrite"; debug?: boolean; existingOnly?: boolean; regionId?: string }
   | { type: "UNDO_FILL" }
   | { type: "ADVANCE_FORM_STEP" }
   | { type: "FILL_PHOTO"; dataUrl: string; fileName: string; mimeType: string }

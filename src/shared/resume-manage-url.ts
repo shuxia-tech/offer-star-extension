@@ -1,9 +1,6 @@
-const RESUME_MANAGE_URL = "https://gfjianli.com/myResume";
+import { RESUME_PAGE_URL } from "./site-links";
 
-/** 高分简历通过地址栏 token 写入登录态，落地后页面会自行去掉该参数。 */
-export function buildResumeManageUrl(token: string | null | undefined) {
-  const url = new URL(RESUME_MANAGE_URL);
-  const value = token?.trim();
-  if (value) url.searchParams.set("token", value);
-  return url.toString();
+/** 简历管理入口使用新站地址，登录由目标网站处理。 */
+export function buildResumeManageUrl() {
+  return RESUME_PAGE_URL;
 }

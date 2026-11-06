@@ -21,6 +21,7 @@ describe("页面变化消息路由", () => {
     for (const url of [
       "https://offer.gfjianli.com/extension-login",
       "https://gfjianli.com/myResume",
+      "https://jisuhaitou.gfjianli.com/resume",
       "https://www.gfjianli.com/",
       "https://open.weixin.qq.com/connect/qrconnect"
     ]) {
