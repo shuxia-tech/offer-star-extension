@@ -5,6 +5,7 @@ import { createFillHistory } from "../shared/fill-history";
 import { getSiteAdapter } from "../shared/site-adapters";
 import { validateFieldValue } from "../shared/field-value-validation";
 import { choiceCandidates, highestDegreeText } from "../shared/fill-values";
+import { moduleFieldKey, moduleKindFromNavId, moduleKindFromTitle, type FormModuleKind } from "../shared/form-modules";
 import { sanitizePageUrl } from "../shared/privacy";
 
 export type ScanDebugAddButton = {
@@ -218,7 +219,8 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     const adapter = getSiteAdapter(pageUrl);
     const result = controls().map((element, elementIndex) => {
       const label = labelFor(element);
-      const guess = guessFieldKey(label);
+      const scoped = scopedFieldKey(element);
+      const guess = scoped ? { key: scoped, confidence: 0.95 } : guessFieldKey(label);
       const id = `offer-star-field-${elementIndex}`;
       element.dataset.offerStarFieldId = id;
       return { id, key: guess.key, label, type: element.tagName.toLowerCase(), elementIndex, confidence: guess.confidence };
@@ -798,10 +800,14 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
   }
 
   function dateSections() {
-    const found: Array<{ root: HTMLElement; kind: string; inputs: HTMLElement[] }> = [];
+    const found: Array<{ root: HTMLElement; kind: string; inputs: HTMLElement[]; explicitRow?: number }> = [];
     const covered = new Set<HTMLElement>();
+    for (const section of moduleDateSections()) {
+      section.inputs.forEach((input) => covered.add(input));
+      found.push(section);
+    }
     for (const range of queryAllDeep<HTMLElement>("[class*='month-range']")) {
-      if (isEffectivelyHidden(range)) continue;
+      if (isEffectivelyHidden(range) || rangeInputsCovered(range, covered)) continue;
       const field = range.closest<HTMLElement>("[class*='apply-field']") ?? range.parentElement;
       const title = field ? applyFieldTitle(field, range) : "";
       const kind = splitDateKind(title, field ?? range) || kindFromBlock(range);
@@ -821,10 +827,77 @@ export function createDomEngine(document: Document, pageUrl: string): DomEngine 
     }
     found.sort((left, right) => compareTopToBottom(left.inputs[0], right.inputs[0]));
     const rows = { education: 0, work: 0, project: 0 };
+    for (const section of found) {
+      if (section.explicitRow === undefined) continue;
+      const kind = section.kind as keyof typeof rows;
+      rows[kind] = Math.max(rows[kind], section.explicitRow + 1);
+    }
     return found.map((section) => {
+      if (section.explicitRow !== undefined) return { ...section, row: section.explicitRow };
       const row = rows[section.kind as keyof typeof rows]++;
       return { ...section, row };
     });
+  }
+
+  function rangeInputsCovered(range: HTMLElement, covered: Set<HTMLElement>) {
+    const inputs = monthRangeInputs(range);
+    return inputs.length > 0 && inputs.every((input) => covered.has(input));
+  }
+
+  /** 已知经历模块里，每一组 apply-fields 是一段，段内「起止时间」对应该段的年月。 */
+  function moduleDateSections() {
+    const sections: Array<{ root: HTMLElement; kind: FormModuleKind; inputs: HTMLElement[]; explicitRow: number }> = [];
+    for (const block of moduleBlocks()) {
+      const kind = blockModuleKind(block);
+      if (!kind) continue;
+      moduleEntries(block).forEach((entry, row) => {
+        const field = Array.from(entry.querySelectorAll<HTMLElement>("[class*='apply-field-']")).find((item) => {
+          const mapped = moduleFieldKey(kind, applyFieldHeading(item));
+          return mapped === "date";
+        });
+        const range = field?.querySelector<HTMLElement>("[class*='month-range']") ?? field;
+        if (!range || isEffectivelyHidden(range)) return;
+        const inputs = monthRangeInputs(range);
+        if (inputs.length < 2) return;
+        sections.push({ root: range, kind, inputs, explicitRow: row });
+      });
+    }
+    return sections;
+  }
+
+  function moduleBlocks() {
+    return queryAllDeep<HTMLElement>("[data-nav-id], [class*='apply-block-']").filter((block) => Boolean(blockModuleKind(block)));
+  }
+
+  function blockModuleKind(block: HTMLElement): FormModuleKind | "" {
+    const fromNav = moduleKindFromNavId(block.getAttribute("data-nav-id") ?? "");
+    if (fromNav) return fromNav;
+    const titleHost = Array.from(block.children).find((child) => child instanceof HTMLElement && Array.from(child.classList).some((name) => name.startsWith("blockTitle") || name.startsWith("block-title")));
+    return moduleKindFromTitle(cleanLabel(titleHost?.textContent ?? ""));
+  }
+
+  function moduleEntries(block: HTMLElement) {
+    const direct = Array.from(block.querySelectorAll<HTMLElement>(":scope > [class*='apply-fields']"));
+    const entries = direct.length
+      ? direct
+      : Array.from(block.querySelectorAll<HTMLElement>("[class*='apply-fields']")).filter((entry) => !entry.querySelector("[class*='apply-fields']"));
+    return entries.filter((entry) => !isEffectivelyHidden(entry));
+  }
+
+  function applyFieldHeading(field: HTMLElement) {
+    const title = Array.from(field.children).find((child): child is HTMLElement => child instanceof HTMLElement && Array.from(child.classList).some((name) => name.startsWith("title-") || name === "title"));
+    return title ? cleanLabel(title.textContent ?? "") : "";
+  }
+
+  function scopedFieldKey(element: HTMLElement) {
+    const field = element.closest<HTMLElement>("[class*='apply-field-']");
+    const block = field?.closest<HTMLElement>("[data-nav-id], [class*='apply-block-']");
+    if (!field || !block) return null;
+    const kind = blockModuleKind(block);
+    if (!kind) return null;
+    const mapped = moduleFieldKey(kind, applyFieldHeading(field));
+    if (!mapped || mapped === "date") return null;
+    return mapped;
   }
 
   function applyFieldTitle(field: HTMLElement, range: HTMLElement) {

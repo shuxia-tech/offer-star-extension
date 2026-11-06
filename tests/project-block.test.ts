@@ -224,4 +224,92 @@ describe("明显不相关的字段", () => {
     expect(document.querySelector<HTMLInputElement>("#sm")?.value).toBe("3");
     expect(document.querySelector("#range")?.textContent).toContain("至今");
   });
+
+  it("项目经验模块里的起止时间按每一段项目填写，不跟教育经历串", async () => {
+    const card = (index: number, months: string[]) => `
+      <div class="apply-fields-card">
+        <div class="apply-field-time date_info">
+          <div class="title-time"><span>起止时间</span></div>
+          <div class="month-range-select">
+            <label class="sd-Select-container-1Eq4x"><input id="sy${index}" placeholder="年" value="" /></label>
+            <div class="sd-Dropdown-dropdown-GmACl" id="sy${index}-menu" style="display:none"><div class="sd-Menu-container-1WISQ"><span data-key="sugar.select.label">2126</span></div></div>
+            <label class="sd-Select-container-1Eq4x"><input id="sm${index}" placeholder="月" value="" /></label>
+            <div class="sd-Dropdown-dropdown-GmACl" id="sm${index}-menu" style="display:none">${months.map((month) => `<div class="sd-Menu-container-1WISQ"><span data-key="sugar.select.label">${month}</span></div>`).join("")}</div>
+            <span>-</span>
+            <label class="sd-Select-container-1Eq4x"><input id="ey${index}" placeholder="年" value="" /></label>
+            <div class="sd-Dropdown-dropdown-GmACl" id="ey${index}-menu" style="display:none"><div class="sd-Menu-container-1WISQ"><span data-key="sugar.select.label">2126</span></div></div>
+            <label class="sd-Select-container-1Eq4x"><input id="em${index}" placeholder="月" value="" /></label>
+            <div class="sd-Dropdown-dropdown-GmACl" id="em${index}-menu" style="display:none">${months.map((month) => `<div class="sd-Menu-container-1WISQ"><span data-key="sugar.select.label">${month}</span></div>`).join("")}</div>
+            <label class="sd-Checkbox-container"><input id="till${index}" type="checkbox" /><span>至今</span></label>
+          </div>
+        </div>
+        <div class="apply-field-name">
+          <div class="title-name"><span>项目名称</span></div>
+          <input class="name" />
+        </div>
+      </div>
+    `;
+    document.body.innerHTML = `
+      <div class="apply-block-edu">
+        <div class="blockTitle-edu"><span>教育背景</span></div>
+        <div class="apply-fields-edu">
+          <div class="apply-field-edu">
+            <div class="title-edu"><span>起止时间</span></div>
+            <div class="month-range-select">
+              <label class="sd-Select-container-1Eq4x"><input id="edu-sy" placeholder="年" /></label>
+              <div class="sd-Dropdown-dropdown-GmACl" id="edu-sy-menu" style="display:none"><div class="sd-Menu-container-1WISQ"><span data-key="sugar.select.label">2126</span></div></div>
+              <label class="sd-Select-container-1Eq4x"><input id="edu-sm" placeholder="月" /></label>
+              <div class="sd-Dropdown-dropdown-GmACl" id="edu-sm-menu" style="display:none"><div class="sd-Menu-container-1WISQ"><span data-key="sugar.select.label">9</span></div></div>
+              <label class="sd-Select-container-1Eq4x"><input id="edu-ey" placeholder="年" /></label>
+              <div class="sd-Dropdown-dropdown-GmACl" id="edu-ey-menu" style="display:none"><div class="sd-Menu-container-1WISQ"><span data-key="sugar.select.label">2126</span></div></div>
+              <label class="sd-Select-container-1Eq4x"><input id="edu-em" placeholder="月" /></label>
+              <div class="sd-Dropdown-dropdown-GmACl" id="edu-em-menu" style="display:none"><div class="sd-Menu-container-1WISQ"><span data-key="sugar.select.label">6</span></div></div>
+            </div>
+          </div>
+          <textarea>这段说明里出现项目两个字</textarea>
+        </div>
+      </div>
+      <div class="apply-block-KRDTLLb5hU" data-nav-id="block-projectInfo">
+        <div class="blockTitle-project"><span>项目经验</span></div>
+        ${card(0, ["5", "6"])}
+        ${card(1, ["5", "6", "9"])}
+      </div>
+    `;
+    document.querySelectorAll<HTMLInputElement>("input[placeholder='年']").forEach((input) => {
+      const menu = document.querySelector<HTMLElement>(`#${input.id}-menu`)!;
+      input.addEventListener("click", () => { menu.style.display = "block"; });
+      input.addEventListener("input", () => {
+        if (!/^\d{4}$/.test(input.value)) return;
+        menu.style.display = "block";
+        menu.innerHTML = `<div class="sd-Menu-container-1WISQ" id="${input.id}-hit"><span data-key="sugar.select.label">${input.value}</span></div>`;
+        document.querySelector(`#${input.id}-hit`)!.addEventListener("mousedown", () => { input.dataset.committed = input.value; });
+      });
+    });
+    document.querySelectorAll<HTMLInputElement>("input[placeholder='月']").forEach((input) => {
+      const menu = document.querySelector<HTMLElement>(`#${input.id}-menu`)!;
+      input.addEventListener("click", () => { menu.style.display = "block"; });
+      menu.querySelectorAll("[class*='sd-Menu-container']").forEach((item) => item.addEventListener("mousedown", () => { input.dataset.committed = item.textContent ?? ""; }));
+    });
+    const engine = createDomEngine(document, "https://careers.example.com/apply");
+    const scanned = engine.scan();
+    const keyOf = (id: string) => scanned.find((field) => field.id === document.querySelector<HTMLElement>(id)?.dataset.offerStarFieldId)?.key ?? null;
+    expect(keyOf("#sy0")).toBeNull();
+    expect(keyOf(".name")).toBe("projectName");
+    await engine.fill({
+      educationStartDate: "2019-09",
+      educationEndDate: "2024-06",
+      projectName: ["甲项目", "乙项目"],
+      projectStartDate: ["2023-05", "2021-09"],
+      projectEndDate: ["Present", "2022-06"]
+    }, "overwrite");
+    expect(document.querySelector<HTMLInputElement>("#edu-sy")?.dataset.committed).toBe("2019");
+    expect(document.querySelector<HTMLInputElement>("#edu-ey")?.dataset.committed).toBe("2024");
+    expect(document.querySelector<HTMLInputElement>("#sy0")?.dataset.committed).toBe("2023");
+    expect(document.querySelector<HTMLInputElement>("#sm0")?.dataset.committed).toBe("5");
+    expect(document.querySelector<HTMLInputElement>("#till0")?.checked).toBe(true);
+    expect(document.querySelector<HTMLInputElement>("#ey0")?.dataset.committed).toBeUndefined();
+    expect(document.querySelector<HTMLInputElement>("#sy1")?.dataset.committed).toBe("2021");
+    expect(document.querySelector<HTMLInputElement>("#ey1")?.dataset.committed).toBe("2022");
+    expect(Array.from(document.querySelectorAll<HTMLInputElement>(".name")).map((item) => item.value)).toEqual(["甲项目", "乙项目"]);
+  });
 });
