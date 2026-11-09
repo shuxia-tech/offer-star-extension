@@ -2,7 +2,7 @@ import type { DetectedField, FieldValue } from "../shared/messages";
 import type { ScanDebugAddButton, ScanDebugSnapshot } from "../content/dom-engine";
 import { isSensitiveFieldLabel } from "../shared/field-matching";
 
-export const showScanDebug = import.meta.env.DEV;
+export const showScanDebug = false;
 
 export type ScanDebugReport = {
   summary: string;

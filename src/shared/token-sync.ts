@@ -41,7 +41,7 @@ export function readOfferStarToken(storage: Pick<Storage, "getItem"> = localStor
 
 /** executeScript 会序列化函数，因此此入口不依赖模块闭包。 */
 export function readOfferStarTokenInPage() {
-  if (location.origin !== "https://offer.gfjianli.com") throw new Error("目标页面已变化");
+  if (location.origin !== "https://jisuhaitou.gfjianli.com") throw new Error("目标页面已变化");
   try {
     const state = JSON.parse(localStorage.getItem("userStore") ?? "null")?.state;
     if (state && Object.prototype.hasOwnProperty.call(state, "token")) {

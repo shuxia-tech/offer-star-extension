@@ -1,6 +1,8 @@
+import { OFFICIAL_SITE_ORIGIN } from "./site-links";
+
 export function isOfferStarPage(url: string | undefined) {
   try {
-    return Boolean(url && new URL(url).origin === "https://offer.gfjianli.com");
+    return Boolean(url && new URL(url).origin === OFFICIAL_SITE_ORIGIN);
   } catch {
     return false;
   }
@@ -31,6 +33,6 @@ export async function reconnectOfferStarLogin(dependencies: {
     await dependencies.saveToken(token.trim());
     return { success: true };
   }
-  if (readFailed) throw new Error("无法读取官网登录状态，请允许插件访问 offer.gfjianli.com 并刷新官网后重试");
-  throw new Error("官网尚未提供登录凭证，请确认在 https://offer.gfjianli.com 完成登录后重试");
+  if (readFailed) throw new Error(`无法读取官网登录状态，请允许插件访问 ${OFFICIAL_SITE_ORIGIN} 并刷新官网后重试`);
+  throw new Error(`官网尚未提供登录凭证，请确认在 ${OFFICIAL_SITE_ORIGIN} 完成登录后重试`);
 }

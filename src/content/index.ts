@@ -1,4 +1,4 @@
-import { RESUME_PAGE_URL } from "../shared/site-links";
+import { RESUME_PAGE_URL, OFFICIAL_SITE_ORIGIN } from "../shared/site-links";
 import type { ExtensionMessage } from "../shared/messages";
 import { browser } from "wxt/browser";
 import { createPreviewTextFill } from "./preview-fill";
@@ -100,7 +100,7 @@ const quickFill = () => {
   }).catch(() => { clearQuickFillPending(); floatingBusy = false; setFloatingFillState(document, "error"); });
 };
 
-if (location.hostname !== "offer.gfjianli.com" || location.pathname !== "/extension-login") {
+if (location.origin !== OFFICIAL_SITE_ORIGIN || location.pathname !== "/extension-login") {
   const runtimeWithUrl = browser.runtime as typeof browser.runtime & { getURL: (path: string) => string };
   mountFloatingLauncher(document, openFloatingPanel, runtimeWithUrl.getURL("icons/icon128.png"), quickFill, () => window.open(RESUME_PAGE_URL, "_blank", "noopener,noreferrer"));
 }
@@ -236,7 +236,7 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, _sender, sendR
 });
 
 // 只在 Offer Star 官网同步当前登录状态，不读取其他网站的 localStorage。
-if (location.hostname === "offer.gfjianli.com") {
+if (location.origin === OFFICIAL_SITE_ORIGIN) {
   let lastOfferStarToken: string | null | undefined;
   let lastCloseRequested = false;
   let tokenSyncPending = false;

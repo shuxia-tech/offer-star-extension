@@ -33,6 +33,7 @@ for (const [name, manifest] of [["Chrome", chrome], ["Edge", edge]]) {
   assertCondition(manifest.action?.default_title === "打开极速海投简历助手", `${name} 必须声明扩展按钮标题`);
   assertCondition(manifest.content_scripts?.some((item) => item.matches?.includes("http://*/*") && item.matches?.includes("https://*/*")), `${name} 必须覆盖 HTTP 和 HTTPS 页面`);
   assertCondition(manifest.web_accessible_resources?.some((item) => item.resources?.includes("floating-panel.html") && item.resources?.includes("chunks/*")), `${name} 必须暴露网页内悬浮面板及其打包脚本`);
+  assertCondition(!manifest.browser_specific_settings, `${name} 商店包不得包含 Firefox 专用 browser_specific_settings`);
 }
 
 assertCondition(firefox.manifest_version === 2, "Firefox 目标必须使用 Manifest V2 兼容构建");

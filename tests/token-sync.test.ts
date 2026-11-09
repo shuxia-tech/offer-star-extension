@@ -47,7 +47,7 @@ describe("官网登录状态同步", () => {
   it("序列化注入入口与内容脚本读取结果一致，并拒绝其他来源", () => {
     const injected = new Function(`return (${readOfferStarTokenInPage.toString()})()`);
     try {
-      vi.stubGlobal("location", { origin: "https://offer.gfjianli.com" });
+      vi.stubGlobal("location", { origin: "https://jisuhaitou.gfjianli.com" });
       for (const raw of ['{"state":{"token":" current "}}', '{"state":{"token":null}}', "invalid"]) {
         const storage = { getItem: (key: string) => key === "userStore" ? raw : "legacy" } as Storage;
         vi.stubGlobal("localStorage", storage);

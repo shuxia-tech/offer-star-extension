@@ -104,7 +104,7 @@ test("未登录时点击登录按钮会打开 Offer Star 官网", async () => {
   await expect.poll(() => context.pages().filter((candidate) => !before.has(candidate)).length).toBe(1);
   const loginPage = context.pages().find((candidate) => !before.has(candidate));
   expect(loginPage).toBeTruthy();
-  await expect(loginPage!).toHaveURL(/https:\/\/offer\.gfjianli\.com\/extension-login|https:\/\/open\.weixin\.qq\.com\//);
+  await expect(loginPage!).toHaveURL(/https:\/\/jisuhaitou\.gfjianli\.com\/extension-login|https:\/\/open\.weixin\.qq\.com\//);
   await expect(panel.locator(".status-banner")).toContainText("已打开微信扫码窗口");
   await loginPage!.close();
 });

@@ -26,14 +26,13 @@ describe("最终填写值合并", () => {
     expect(values.projectDescription).toBe("设计自动填表流程");
   });
 
-  it("没有语言能力模块时，语言类型不会写入技能与证书", () => {
+  it("没有英语能力或其他外语模块时，语言类型保持空白", () => {
     const profile = normalizeResumeProfile({
-      resumeModules: [
-        { moduleType: "技能与证书", moduleContent: JSON.stringify({ entries: [{ category: "英语能力", items: "IELTS 6.5、英语六级" }] }) }
-      ]
+      id: "skills-only",
+      data: { computer: [{ 技能名称: "Python" }], certificate: [{ 证书名称: "计算机二级" }] }
     });
     expect(buildResumeFieldValues(profile).language).toBe("");
-    expect(buildResumeFieldValues(profile).skills).toContain("英语能力");
+    expect(buildResumeFieldValues(profile).skills).toBe("Python、计算机二级");
   });
 
   it("按最高学历推断专业类别，没有关键词时留空", () => {

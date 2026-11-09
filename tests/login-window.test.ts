@@ -3,7 +3,7 @@ import { OFFER_STAR_EXTENSION_LOGIN_URL, shouldCloseLoginWindow, shouldRequestLo
 
 describe("插件扫码登录窗口", () => {
   it("登录地址指向官网专用入口", () => {
-    expect(new URL(OFFER_STAR_EXTENSION_LOGIN_URL).href).toBe("https://offer.gfjianli.com/extension-login");
+    expect(new URL(OFFER_STAR_EXTENSION_LOGIN_URL).href).toBe("https://jisuhaitou.gfjianli.com/extension-login");
   });
 
   it("只有登录窗口回传有效凭证时才关闭该窗口", () => {

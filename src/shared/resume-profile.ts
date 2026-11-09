@@ -3,206 +3,172 @@ import { richTextToPlain } from "./rich-text";
 
 type LooseRecord = Record<string, unknown>;
 
-/** 将 Offer Star 现有简历模块结构转换成扩展统一填写模型。 */
+type JisuRecord = Record<string, unknown>;
+type JisuDoc = { id?: unknown; name?: unknown; updatedAt?: unknown; data?: Record<string, unknown> };
+
+/** 把极速海投工作区或单份简历转换成统一填写模型。字段名使用简历编辑器里的中文标题。 */
 export function normalizeResumeProfile(payload: unknown): ResumeProfile {
-  const root = asRecord(payload);
-  const modules = Array.isArray(root.resumeModules) ? root.resumeModules : [];
-  const moduleMap = new Map<string, unknown>();
-  for (const item of modules) {
-    const module = asRecord(item);
-    if (module.hasEnable === false) continue;
-    const type = String(module.moduleType ?? "");
-    const content = parseModuleContent(module.moduleContent);
-    moduleMap.set(type, content);
-  }
+  const doc = jisuDoc(payload) ?? jisuDoc(activeResume(parseJisuWorkspace(payload)));
+  return doc ? profileFromJisuDoc(doc) : emptyProfile();
+}
 
-  const basic = asRecord(moduleMap.get("个人信息") ?? moduleMap.get("基本信息"));
-  const education = asArray(moduleMap.get("教育经历") ?? moduleMap.get("教育背景"));
-  const workExperience = asArray(moduleMap.get("工作经历") ?? moduleMap.get("工作经验"));
-  const internship = asArray(moduleMap.get("实习经历") ?? moduleMap.get("实习经验"));
-  const projectExperience = asArray(moduleMap.get("项目经历") ?? moduleMap.get("项目经验"));
-  const campusExperience = asArray(moduleMap.get("校园经历") ?? moduleMap.get("实践活动"));
-  const researchExperience = asArray(moduleMap.get("研究经历"));
-  const portfolio = asArray(moduleMap.get("作品集"));
-  const otherExperience = asArray(moduleMap.get("其他经历"));
-  const awards = asArray(moduleMap.get("荣誉奖项") ?? moduleMap.get("获奖经历") ?? moduleMap.get("荣誉证书"));
-  const skillModule = moduleMap.get("专业技能") ?? moduleMap.get("技能与证书") ?? moduleMap.get("其他能力") ?? moduleMap.get("技能/证书/语言/兴趣爱好");
-  const languageModule = firstModule(moduleMap, ["语言能力", "语言技能", "外语能力", "语言水平", "外语水平"]);
-  const advantageModule = asRecord(moduleMap.get("个人优势") ?? moduleMap.get("个人总结") ?? moduleMap.get("自我评价"));
-  const skills = readSkills(skillModule);
-  const honors = awards.map((item) => ({
-    name: plain(item.name ?? item.cert ?? item.title),
-    time: plain(item.time),
-    level: plain(item.level),
-    issuer: plain(item.issuer),
-    description: plain(item.description)
+/** 极速海投把全部简历放在一份工作区里。接口 data 为 { content }，content 是工作区 JSON。 */
+export function parseJisuWorkspace(payload: unknown): { active: string; resumes: JisuDoc[] } {
+  const root = asRecord(unwrapContent(payload));
+  const resumes = Array.isArray(root.resumes) ? root.resumes.map(asRecord).filter(isJisuDoc) : [];
+  return { active: stringValue(root.active), resumes };
+}
+
+/** 工作区里的简历列表。没有 id 的记录不展示。 */
+export function normalizeResumeList(payload: unknown): ResumeSummary[] {
+  return parseJisuWorkspace(payload).resumes.flatMap((resume) => {
+    const id = stringValue(resume.id);
+    if (!id) return [];
+    return [{ id, title: stringValue(resume.name) || "未命名简历", previewImage: "", updateTime: stringValue(resume.updatedAt) }];
+  });
+}
+
+function profileFromJisuDoc(doc: JisuDoc): ResumeProfile {
+  const basic = row(doc, "basic");
+  const intent = row(doc, "intent");
+  const education = rows(doc, "education").map((item) => ({
+    school: cell(item, "学校名称"),
+    major: cell(item, "专业"),
+    degree: cell(item, "学历"),
+    startTime: cell(item, "开始日期"),
+    endTime: cell(item, "结束日期"),
+    description: plain(cell(item, "专业描述") || cell(item, "专业主要课程"))
+  }));
+  const workExperience = [...rows(doc, "internship"), ...rows(doc, "work")].map((item) => ({
+    company: cell(item, "公司名称"),
+    position: cell(item, "职位名称"),
+    city: cell(item, "工作城市"),
+    description: plain(cell(item, "工作内容")),
+    startTime: cell(item, "开始日期"),
+    endTime: cell(item, "结束日期")
+  })).filter((item) => item.company || item.position || item.description || item.startTime || item.endTime);
+  const projectExperience = rows(doc, "project").map((item) => ({
+    name: cell(item, "项目名称"),
+    role: cell(item, "担任角色"),
+    description: plain(cell(item, "项目描述") || cell(item, "个人职责")),
+    startTime: cell(item, "开始日期"),
+    endTime: cell(item, "结束日期")
+  })).filter((item) => item.name || item.role || item.description || item.startTime || item.endTime);
+  const honors = rows(doc, "award").map((item) => ({
+    name: cell(item, "奖项名称"),
+    time: cell(item, "获奖时间"),
+    level: cell(item, "奖项级别"),
+    issuer: cell(item, "颁奖单位"),
+    description: plain(cell(item, "奖项描述"))
   })).filter((item) => item.name || item.time || item.level || item.issuer || item.description);
-
+  const campusExperience = rows(doc, "campus").map((item) => ({
+    name: cell(item, "经历名称") || cell(item, "活动名称"),
+    role: cell(item, "担任角色"),
+    section: cell(item, "组织名称"),
+    description: plain(cell(item, "工作内容") || cell(item, "活动描述")),
+    startTime: cell(item, "开始日期"),
+    endTime: cell(item, "结束日期")
+  })).filter((item) => item.name || item.role || item.description || item.startTime || item.endTime);
+  const portfolio = rows(doc, "portfolio").map((item) => ({
+    name: cell(item, "作品名称"),
+    url: cell(item, "作品链接"),
+    description: plain(cell(item, "作品描述"))
+  })).filter((item) => item.name || item.url || item.description);
+  const skills = [
+    ...rows(doc, "computer").map((item) => cell(item, "技能名称")).filter(Boolean),
+    ...rows(doc, "certificate").map((item) => cell(item, "证书名称")).filter(Boolean)
+  ];
+  const languages = [
+    ...rows(doc, "english").map((item) => cell(item, "水平")).filter(Boolean),
+    ...rows(doc, "language").map((item) => cell(item, "语种")).filter(Boolean)
+  ];
   return {
     basic: {
-      name: stringValue(basic.name),
-      phone: stringValue(basic.phone),
-      email: stringValue(basic.email),
-      age: stringValue(basic.age),
-      gender: stringValue(basic.gender),
-      currentCity: stringValue(basic.currentCity ?? basic.targetCity),
-      targetCity: stringValue(basic.targetCity),
-      currentStatus: stringValue(basic.currentStatus),
-      targetSalary: stringValue(basic.targetSalary),
-      wechat: stringValue(basic.wechat),
-      website: stringValue(basic.website),
-      github: stringValue(basic.github),
-      gitee: stringValue(basic.gitee),
-      targetPosition: stringValue(basic.targetPosition),
-      height: stringValue(basic.height),
-      weight: stringValue(basic.width),
-      nation: stringValue(basic.nation),
-      nativePlace: stringValue(basic.nativePlace),
-      politicalOutlook: stringValue(basic.politicalOutlook),
-      maritalStatus: stringValue(basic.maritalStatus)
+      name: cell(basic, "姓名"),
+      phone: cell(basic, "手机号"),
+      email: cell(basic, "邮箱"),
+      gender: cell(basic, "性别"),
+      currentCity: cell(basic, "当前所在地"),
+      targetCity: cell(intent, "期望城市"),
+      currentStatus: cell(basic, "工作经验") || cell(basic, "工作年限"),
+      targetSalary: cell(intent, "期望薪资"),
+      wechat: cell(basic, "微信号"),
+      targetPosition: cell(intent, "期望职位"),
+      height: cell(basic, "身高"),
+      weight: cell(basic, "体重"),
+      nation: cell(basic, "民族"),
+      nativePlace: cell(basic, "籍贯"),
+      politicalOutlook: cell(basic, "政治面貌"),
+      maritalStatus: cell(basic, "婚姻状况")
     },
-    education: education.map((item) => ({
-      school: stringValue(item.school),
-      major: stringValue(item.profession ?? item.major),
-      degree: stringValue(item.degree),
-      startTime: stringValue(item.startTime ?? item.startDate),
-      endTime: stringValue(item.endTime ?? item.endDate),
-      description: plain(item.description)
-    })),
-    workExperience: [...workExperience, ...internship].map((item) => ({
-      company: stringValue(item.company),
-      position: stringValue(item.position),
-      city: stringValue(item.city),
-      description: plain(item.description),
-      startTime: stringValue(item.startTime ?? item.startDate),
-      endTime: stringValue(item.endTime ?? item.endDate)
-    })),
-    projectExperience: projectExperience.map((item) => ({
-      name: stringValue(item.name ?? item.projectName),
-      role: stringValue(item.role),
-      description: plain(item.description),
-      startTime: stringValue(item.startTime ?? item.startDate),
-      endTime: stringValue(item.endTime ?? item.endDate)
-    })),
+    education,
+    workExperience,
+    projectExperience,
     awards: honors.map((item) => item.name).filter(Boolean),
     honors,
-    campusExperience: campusExperience.map(readActivity).filter(hasActivityContent),
-    researchExperience: researchExperience.map((item) => readActivity({ ...item, name: item.name ?? item.projectName })).filter(hasActivityContent),
-    portfolio: portfolio.map((item) => ({
-      name: stringValue(item.name),
-      url: stringValue(item.url),
-      description: plain(item.description)
-    })).filter((item) => item.name || item.url || item.description),
-    otherExperience: otherExperience.map(readActivity).filter(hasActivityContent),
-    skills: skills.skills,
-    skillsText: skills.skillsText,
-    languages: languageModule === undefined ? [] : readLanguages(languageModule),
-    selfIntroduction: plain(advantageModule.description)
+    campusExperience,
+    portfolio,
+    skills,
+    skillsText: skills.join("\n"),
+    languages,
+    selfIntroduction: plain(cell(row(doc, "intro"), "自我介绍"))
   };
 }
 
-function plain(value: unknown) {
-  return richTextToPlain(stringValue(value));
+function emptyProfile(): ResumeProfile {
+  return { basic: { name: "", phone: "", email: "" }, education: [], workExperience: [], skills: [], languages: [] };
 }
 
-function readActivity(item: LooseRecord) {
-  return {
-    name: stringValue(item.name),
-    role: stringValue(item.role),
-    section: stringValue(item.section),
-    address: stringValue(item.address),
-    description: plain(item.description),
-    startTime: stringValue(item.startTime ?? item.startDate),
-    endTime: stringValue(item.endTime ?? item.endDate)
-  };
+function activeResume(workspace: { active: string; resumes: JisuDoc[] }) {
+  return workspace.resumes.find((item) => stringValue(item.id) === workspace.active) ?? workspace.resumes[0];
 }
 
-function hasActivityContent(item: ReturnType<typeof readActivity>) {
-  return Boolean(item.name || item.role || item.section || item.address || item.description || item.startTime || item.endTime);
+function unwrapContent(payload: unknown): unknown {
+  if (typeof payload === "string") return parseJson(payload);
+  const record = asRecord(payload);
+  if ("content" in record) return unwrapContent(record.content);
+  if ("data" in record && record.data && typeof record.data === "object") return unwrapContent(record.data);
+  return payload;
 }
 
-function firstModule(moduleMap: Map<string, unknown>, names: string[]) {
-  for (const name of names) {
-    if (moduleMap.has(name)) return moduleMap.get(name);
-  }
-  return undefined;
-}
-
-function readLanguages(moduleValue: unknown) {
-  const records = Array.isArray(moduleValue) ? moduleValue : [moduleValue];
-  const names = records.flatMap((entry) => {
-    const item = asRecord(entry);
-    if (Array.isArray(item.entries)) {
-      return item.entries.map((row) => languageName(asRecord(row)));
-    }
-    return [languageName(item)];
-  });
-  return [...new Set(names.map((name) => name.trim()).filter(Boolean))];
-}
-
-function languageName(item: LooseRecord) {
-  return stringValue(item.language ?? item.name ?? item.lang ?? item.type ?? item.category) || plain(item.description);
-}
-
-function readSkills(moduleValue: unknown) {
-  const record = asRecord(moduleValue);
-  if (Array.isArray(record.entries)) {
-    const lines = record.entries.map((entry) => {
-      const item = asRecord(entry);
-      const category = stringValue(item.category);
-      const items = plain(item.items);
-      return [category, items].filter(Boolean).join("：");
-    }).filter(Boolean);
-    return { skillsText: lines.join("\n"), skills: lines };
-  }
-  const skillsText = plain(record.description);
-  const skills = [
-    ...skillsText.split("\n").map((line) => line.replace(/^•\s*/, "").trim()).filter(Boolean),
-    ...asStringArray(record.skills),
-    ...asStringArray(record.technology)
-  ];
-  return { skillsText, skills: [...new Set(skills)] };
-}
-
-/** 将简历列表接口的分页结果转换成扩展需要的最小字段。 */
-export function normalizeResumeList(payload: unknown): ResumeSummary[] {
-  const root = asRecord(payload);
-  const list = Array.isArray(root.list) ? root.list : Array.isArray(payload) ? payload : [];
-  return list.map((item) => {
-    const record = asRecord(item);
-    return {
-      id: String(record.id ?? ""),
-      title: stringValue(record.title) || "未命名简历",
-      previewImage: stringValue(record.previewImage),
-      updateTime: stringValue(record.updateTime)
-    };
-  }).filter((item) => item.id);
-}
-
-function parseModuleContent(value: unknown): unknown {
-  if (typeof value !== "string") return value;
+function parseJson(value: string): unknown {
   try {
     return JSON.parse(value);
   } catch {
-    console.warn("[Offer Star][Resume] 简历模块内容不是有效 JSON");
-    return {};
+    return null;
   }
+}
+
+function isJisuDoc(value: LooseRecord): value is JisuDoc {
+  return Boolean(value.data && typeof value.data === "object");
+}
+
+function jisuDoc(payload: unknown): JisuDoc | undefined {
+  const record = asRecord(payload);
+  return isJisuDoc(record) ? record : undefined;
+}
+
+function rows(doc: JisuDoc, section: string) {
+  const value = doc.data?.[section];
+  return Array.isArray(value) ? value.map(asRecord) : [];
+}
+
+function row(doc: JisuDoc, section: string) {
+  return rows(doc, section)[0] ?? {};
+}
+
+function cell(record: JisuRecord, label: string) {
+  return stringValue(record[label]).trim();
+}
+
+function plain(value: string) {
+  return richTextToPlain(value);
 }
 
 function asRecord(value: unknown): LooseRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? value as LooseRecord : {};
 }
 
-function asArray(value: unknown): LooseRecord[] {
-  return Array.isArray(value) ? value.map(asRecord) : [];
-}
-
 function stringValue(value: unknown): string {
   return typeof value === "string" || typeof value === "number" ? String(value) : "";
-}
-
-function asStringArray(value: unknown): string[] {
-  if (Array.isArray(value)) return value.map(stringValue).filter(Boolean);
-  const result = stringValue(value);
-  return result ? [result] : [];
 }

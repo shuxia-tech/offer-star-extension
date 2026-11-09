@@ -1,4 +1,6 @@
-export const OFFER_STAR_EXTENSION_LOGIN_URL = "https://offer.gfjianli.com/extension-login";
+import { OFFICIAL_SITE_ORIGIN } from "./site-links";
+
+export const OFFER_STAR_EXTENSION_LOGIN_URL = `${OFFICIAL_SITE_ORIGIN}/extension-login`;
 
 export function shouldCloseLoginWindow(loginWindowId: number | undefined, senderWindowId: number | undefined, token: string | null) {
   return Boolean(token?.trim()) && typeof loginWindowId === "number" && senderWindowId === loginWindowId;

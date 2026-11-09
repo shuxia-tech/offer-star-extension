@@ -1,6 +1,6 @@
 import type { ExtensionMessage, ResumeProfile, ResumeSummary } from "../shared/messages";
 import { browser } from "wxt/browser";
-import { normalizeResumeList, normalizeResumeProfile } from "../shared/resume-profile";
+import { normalizeResumeList, normalizeResumeProfile, parseJisuWorkspace } from "../shared/resume-profile";
 import { requestAiGateway } from "../shared/ai-request";
 import { RESUME_SESSION_STORAGE_KEYS } from "../shared/auth-session";
 import { requestResumeApi, ResumeSessionExpiredError } from "../shared/resume-request";
@@ -10,6 +10,7 @@ import { buildResumeManageUrl } from "../shared/resume-manage-url";
 import { buildAiRequestBody, sanitizePageUrl } from "../shared/privacy";
 import { isOfferStarPage, reconnectOfferStarLogin } from "../shared/login-reconnect";
 import { OFFER_STAR_EXTENSION_LOGIN_URL, shouldCloseLoginWindow } from "../shared/login-window";
+import { OFFICIAL_SITE_ORIGIN } from "../shared/site-links";
 import { withRequestTimeout } from "../shared/request-timeout";
 import { readOfferStarTokenInPage } from "../shared/token-sync";
 import { normalizeUserProfile } from "../shared/user-profile";
@@ -136,7 +137,7 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRe
       return false;
     }
     void withRequestTimeout((async () => reconnectOfferStarLogin({
-      tabs: await browser.tabs.query({ url: "https://offer.gfjianli.com/*" }),
+      tabs: await browser.tabs.query({ url: `${OFFICIAL_SITE_ORIGIN}/*` }),
       readToken: async (tabId) => {
         const results = await browser.scripting.executeScript({
           target: { tabId },
@@ -229,8 +230,10 @@ async function getResumeProfile(resumeId: string): Promise<ResumeProfile> {
   if (!extensionToken) throw new Error("请先登录极速海投");
   const cacheKey = profileCacheKey(resumeId);
   try {
-    const response = await requestOfferStar(`/c/resume/${encodeURIComponent(resumeId)}`, extensionToken);
-    const profile = normalizeResumeProfile(response);
+    const response = await requestOfferStar("/c/jisu/resume", extensionToken);
+    const doc = parseJisuWorkspace(response).resumes.find((item) => String(item.id ?? "") === resumeId);
+    if (!doc) throw new Error("没有找到这份简历");
+    const profile = normalizeResumeProfile(doc);
     await browser.storage.local.set({ [cacheKey]: { value: profile, savedAt: Date.now() } satisfies CachedResumeProfile });
     console.info("[Offer Star][Background] 简历获取成功", { 简历编号: resumeId });
     return profile;
@@ -256,7 +259,7 @@ async function getResumeList(): Promise<ResumeSummary[]> {
   const { extensionToken } = await browser.storage.local.get("extensionToken") as { extensionToken?: string };
   if (!extensionToken) throw new Error("请先登录极速海投");
   try {
-    const response = await requestOfferStar("/c/resume/templates/my?page=1&limit=100", extensionToken);
+    const response = await requestOfferStar("/c/jisu/resume", extensionToken);
     const list = normalizeResumeList(response);
     await browser.storage.local.set({ [RESUME_LIST_CACHE_KEY]: { value: list, savedAt: Date.now() } satisfies CachedResumeList });
     console.info("[Offer Star][Background] 简历列表获取成功", { 数量: list.length });
