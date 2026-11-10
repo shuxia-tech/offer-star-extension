@@ -16,6 +16,8 @@ for (const width of [1280, 320]) {
       args: [`--disable-extensions-except=${extensionPath}`, `--load-extension=${extensionPath}`]
     });
     try {
+      const worker = context.serviceWorkers()[0] ?? await context.waitForEvent("serviceworker");
+      await worker.evaluate(() => { globalThis.fetch = () => Promise.reject(new Error("底栏测试模拟扫码服务离线")); });
       // 拦截官网导航，只验证跳转目标，不请求真实账号或业务服务。
       await context.route("https://offer.gfjianli.com/", (route) => route.fulfill({ contentType: "text/html", body: "<title>校招信息测试页</title>" }));
       await context.route("https://jisuhaitou.gfjianli.com/", (route) => route.fulfill({ contentType: "text/html", body: "<title>官网测试页</title>" }));

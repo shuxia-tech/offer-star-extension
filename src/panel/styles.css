@@ -433,3 +433,19 @@ button, input, select, textarea { font: inherit; }
 .offer-star-panel .fill-tool-help { display: grid; place-items: center; flex: 0 0 17px; width: 17px; min-height: 17px; padding: 0; border: 1px solid currentColor !important; border-radius: 50%; color: #6891ce !important; font-size: 11px; line-height: 1; background: transparent !important; box-shadow: none; }
 .fill-tool:focus-within, .fill-tool:hover { background: #e3edff; }
 .fill-method-help { margin: 9px 0 0; padding: 8px 10px; color: #6d7e96; font-size: 11px; line-height: 1.7; border-radius: 7px; background: #f6f8fc; }
+
+/* 未登录时在插件内展示扫码页，保留原有页脚和官网备用入口。 */
+.login-panel { flex: 1; padding: 10px 0 8px; text-align: center; }
+.login-panel h1 { margin: 0 0 10px; color: #235fe5; font-size: 22px; line-height: 1.4; font-weight: 700; }
+.login-wechat { display: inline-flex; align-items: center; gap: 5px; margin: 0 0 4px; padding: 3px 12px; color: #7c899b; font-size: 12px; border-radius: 99px; background: #f0f3f8; }
+.login-wechat span { color: #15bd66; }
+.login-frame-shell { position: relative; width: min(100%, 198px); margin: 0 auto; overflow: hidden; background: #fff; border-radius: 8px; }
+.login-frame-shell iframe { position: absolute; top: 0; left: 0; width: 300px; height: 400px; border: 0; transform-origin: top left; }
+.login-frame-status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 10px; padding: 12px; color: #8390a3; font-size: 11px; background: #fff; }
+.login-frame-status strong { color: #52647e; font-size: 13px; }
+.login-spinner { width: 24px; height: 24px; border: 2px solid #dfebff; border-top-color: var(--accent); border-radius: 50%; animation: offer-star-spin .8s linear infinite; }
+.login-instruction { margin: 4px 0 8px; color: #65758c; font-size: 11px; }
+.login-actions { display: flex; justify-content: center; gap: 8px; }
+.offer-star-panel .login-actions button, .offer-star-panel .login-frame-status button { min-height: 28px; padding: 0 10px; font-size: 11px; font-weight: 500; border-radius: 6px; color: #497ccc; border-color: #dce7f7; background: #f7faff; }
+.offer-star-panel .login-reconnect { min-height: 26px; margin-top: 5px; padding: 0; font-size: 10px; font-weight: 400; color: #8594a9; border: 0; background: transparent; }
+@media (prefers-reduced-motion: reduce) { .login-spinner { animation: none; } }

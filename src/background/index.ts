@@ -16,10 +16,23 @@ import { readOfferStarTokenInPage } from "../shared/token-sync";
 import { normalizeUserProfile } from "../shared/user-profile";
 import { readFillStats, recordSuccessfulFill } from "../shared/fill-stats";
 
+import { embeddedWechatUrl } from "../shared/embedded-login";
+
+const embeddedLoginStorage = browser.storage.session ?? browser.storage.local;
+const embeddedLoginKey = (tabId: number, requestId: string) => `embeddedLogin:${tabId}:${requestId}`;
+async function readEmbeddedLogin(tabId: number, requestId: string) {
+  const value = (await embeddedLoginStorage.get(embeddedLoginKey(tabId, requestId)))[embeddedLoginKey(tabId, requestId)] as { requestId?: unknown; expiresAt?: unknown } | undefined;
+  return value && typeof value.requestId === "string" && typeof value.expiresAt === "number" ? { requestId: value.requestId, expiresAt: value.expiresAt } : undefined;
+}
+
 const API_BASE = "https://api.gfjianli.com/api";
 const EXTENSION_AI_URL = import.meta.env.VITE_OFFER_STAR_AI_URL || "https://offer.gfjianli.com/api/extension/ai/analyze";
 let loginWindowId: number | undefined;
 let fillStatsQueue: Promise<unknown> = Promise.resolve();
+
+browser.tabs.onRemoved.addListener((tabId) => {
+  void embeddedLoginStorage.get(null).then((stored) => embeddedLoginStorage.remove(Object.keys(stored).filter((key) => key.startsWith(`embeddedLogin:${tabId}:`))));
+});
 
 browser.windows.onRemoved.addListener((windowId) => {
   if (windowId === loginWindowId) loginWindowId = undefined;
@@ -79,6 +92,51 @@ browser.runtime.onMessage.addListener((message: ExtensionMessage, sender, sendRe
       console.error("[Offer Star][Background] 获取用户资料失败", error);
       sendResponse({ error: error instanceof Error ? error.message : "用户资料加载失败" });
     });
+    return true;
+  }
+  if (message.type === "GET_EMBEDDED_LOGIN_URL" || message.type === "CANCEL_EMBEDDED_LOGIN") {
+    const extensionOrigin = (browser.runtime as typeof browser.runtime & { getURL: (path: string) => string }).getURL("");
+    const tabId = sender.tab?.id;
+    if (!sender.url?.startsWith(extensionOrigin) || typeof tabId !== "number") {
+      sendResponse({ error: "请在网页内极速海投面板登录" }); return false;
+    }
+    if (message.type === "CANCEL_EMBEDDED_LOGIN") {
+      // 每轮二维码独立存储，旧轮次的取消不能删掉刚刷新的二维码会话。
+      void embeddedLoginStorage.remove(embeddedLoginKey(tabId, message.requestId)).then(() => sendResponse({ success: true })); return true;
+    }
+    const requestId = Array.from(crypto.getRandomValues(new Uint32Array(4)), (part) => part.toString(16)).join("-");
+    const controller = new AbortController();
+    void withRequestTimeout((async () => {
+      await embeddedLoginStorage.set({ [embeddedLoginKey(tabId, requestId)]: { requestId, expiresAt: Date.now() + 120000 } });
+      const response = await fetch(`${API_BASE}/oauth/resume/render/wechat?webName=jisu`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", credentials: "omit", signal: controller.signal });
+      if (!response.ok) throw new Error("扫码服务暂时不可用，请重试");
+      const body = await response.json();
+      if (body.code !== 200 && body.code !== 0) throw new Error("未获取到微信扫码地址，请重试");
+      return embeddedWechatUrl(body.data);
+    })(), 10000, "二维码加载超时，请刷新重试", () => controller.abort()).then((url) => {
+      sendResponse({ url, requestId });
+    }).catch(() => {
+      sendResponse({ error: "二维码加载失败，请刷新或使用官网登录" });
+    });
+    return true;
+  }
+  if (message.type === "COMPLETE_EMBEDDED_LOGIN") {
+    const tabId = sender.tab?.id;
+    const extensionOrigin = (browser.runtime as typeof browser.runtime & { getURL: (path: string) => string }).getURL("");
+    if (tabId === undefined || !sender.url?.startsWith(extensionOrigin)) { sendResponse({ success: false }); return false; }
+    void (async () => {
+      const key = embeddedLoginKey(tabId, message.requestId);
+      const pending = await readEmbeddedLogin(tabId, message.requestId);
+      if (!pending || pending.expiresAt <= Date.now() || pending.requestId !== message.requestId || typeof message.token !== "string" || !message.token.trim() || message.token.length > 8192) {
+        sendResponse({ success: false }); return;
+      }
+      const token = message.token.trim();
+      const profile = await requestResumeApi(`${API_BASE}/auth/c/getLoginUser/offer`, token);
+      const current = await readEmbeddedLogin(tabId, message.requestId);
+      if (!profile || typeof profile !== "object" || Array.isArray(profile) || !Object.keys(profile).length || current?.requestId !== pending.requestId) { sendResponse({ success: false }); return; }
+      await browser.storage.local.set({ extensionToken: token });
+      await embeddedLoginStorage.remove(key); sendResponse({ success: true });
+    })().catch(() => sendResponse({ success: false }));
     return true;
   }
   if (message.type === "OPEN_OFFER_STAR_LOGIN") {

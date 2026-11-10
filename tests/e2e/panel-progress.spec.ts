@@ -72,7 +72,7 @@ for (const width of [1280, 320]) {
       await panel.getByRole("button", { name: "关闭悬浮面板" }).click();
       await page.getByRole("button", { name: "打开极速海投简历助手" }).click();
       // 修改简历固定跳到用户指定的简历页，不传递登录凭证。
-      await context.route("https://jisuhaitou.gfjianli.com/resume", (route) => route.fulfill({ contentType: "text/html", body: "<title>修改简历测试页</title>" }));
+      await context.route("https://jisuhaitou.gfjianli.com/resume", (route) => route.fulfill({ contentType: "text/html", body: '<title>修改简历测试页</title><script>localStorage.setItem("SECRET_TOKEN", "fixture-token")</script>'  }));
       await panel.getByRole("tab", { name: "手动填充", exact: true }).click();
       const edit = panel.getByRole("link", { name: "修改简历", exact: true });
       await expect(edit).toHaveAttribute("href", "https://jisuhaitou.gfjianli.com/resume");

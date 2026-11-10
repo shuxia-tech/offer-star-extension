@@ -123,6 +123,9 @@ window.addEventListener("message", (event) => {
       setFloatingFillState(document, event.data.state);
     }
   }
+  if (event.data?.type === "OFFER_STAR_SHOW_LOGIN_PANEL") {
+    setFloatingPanelVisible(document, true); setFloatingLauncherVisible(document, false);
+  }
   if (event.data?.type === "OFFER_STAR_PANEL_DRAG" && ["start", "move", "end"].includes(event.data.stage)) {
     dragFloatingPanel(document, event.data.stage, event.data.x, event.data.y);
   }

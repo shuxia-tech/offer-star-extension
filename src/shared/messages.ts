@@ -129,6 +129,9 @@ export type ExtensionMessage =
   | { type: "RECORD_SUCCESSFUL_FILL"; filledCount: number }
   | { type: "OPEN_FLOATING_PANEL" }
   | { type: "OPEN_OFFER_STAR_LOGIN" }
+  | { type: "GET_EMBEDDED_LOGIN_URL" }
+  | { type: "CANCEL_EMBEDDED_LOGIN"; requestId: string }
+  | { type: "COMPLETE_EMBEDDED_LOGIN"; token: string; requestId: string }
   | { type: "OPEN_OFFER_STAR_RESUME" }
   | { type: "GET_CURRENT_TAB_ID" }
   | PageCommand

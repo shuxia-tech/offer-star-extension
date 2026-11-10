@@ -28,6 +28,7 @@ import type { FloatingFillState } from "../shared/floating-state";
 import { ResumePreview, ResumePreviewSkeleton } from "./resume-preview";
 import { buildScanDebug, ScanDebugPanel, showScanDebug, type ScanDebugReport } from "./scan-debug";
 import { OFFICIAL_SITE_URL, RESUME_PAGE_URL } from "../shared/site-links";
+import { LoginPanel } from "./login-panel";
 import "./styles.css";
 
 /** 将浏览器消息异常转换为用户可以直接采取行动的中文提示。 */
@@ -517,7 +518,7 @@ function App() {
   async function runAutofillPage(kind: "all" | "incremental" | "region") {
     if (authState !== "signed-in") {
       setDockState("login");
-      await openOfferStarLogin();
+      if (embedded) window.parent.postMessage({ type: "OFFER_STAR_SHOW_LOGIN_PANEL" }, "*");
       return;
     }
     const decision = decideAutofillResume(resumes, selectedResumeId, Boolean(resume));
@@ -931,6 +932,7 @@ function App() {
       {embedded ? <button className="panel-close-button" type="button" aria-label="关闭悬浮面板" onClick={() => window.parent.postMessage({ type: "OFFER_STAR_CLOSE_FLOATING_PANEL" }, "*")}>×</button> : null}
     </header>
 
+    {authState !== "signed-out" ? <>
     <section className="application-stats" aria-label="填写统计">
       <div className="application-stat"><span>今日填写</span><strong>{fillStats?.today ?? "—"}</strong></div>
       <div className="application-stat"><span>累计填写</span><strong>{fillStats?.total ?? "—"}<small>次</small></strong></div>
@@ -945,7 +947,8 @@ function App() {
 
     {message ? <div className={`status-banner status-${phase}${securityBlocked ? " status-security" : ""}`} role="status" aria-live="polite" aria-atomic="true">{message}</div> : null}
 
-    {panelTab === "scan" && showScanDebug ? <ScanDebugPanel report={scanDebug} /> : panelTab === "fill" ? <section className="smart-fill" aria-label="智能表单填充">
+    </> : null}
+    {authState === "signed-out" ? <LoginPanel openWebsite={() => void openOfferStarLogin()} refreshLogin={() => void refreshWebsiteLogin()} pending={loginPending} /> : panelTab === "scan" && showScanDebug ? <ScanDebugPanel report={scanDebug} /> : panelTab === "fill" ? <section className="smart-fill" aria-label="智能表单填充">
       <div className={`fill-hero${phase === "filling" ? " fill-hero-busy" : ""}`}>
         <div className="fill-hero-heading">
           <div className="fill-hero-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7l1-8Z" /></svg></div>
@@ -990,11 +993,11 @@ function App() {
       {authState === "signed-in" ? <button className="button-primary preview-manage" type="button" onClick={() => void openOfferStarResume()}>管理简历</button> : null}
     </section>}
     <div className="panel-bottom">
-      <section className="invite-banner" aria-label="邀请好友">
+      {authState === "signed-in" ? <section className="invite-banner" aria-label="邀请好友">
         <span className="invite-gift" aria-hidden="true"><PanelIcon name="gift" /></span>
         <p>每邀请 1 位好友，<br />你和好友各得 <strong>1 天 VIP</strong></p>
-        <button type="button" className="invite-button" disabled={authState === "checking" || loginPending} onClick={openInvite}>马上邀请</button>
-      </section>
+        <button type="button" className="invite-button" disabled={loginPending} onClick={openInvite}>马上邀请</button>
+      </section> : null}
       <footer className="panel-footer">
       {inviteOpen && authState === "signed-in" ? <section className="footer-help invite-share" aria-label="分享邀请链接">
         <div className="footer-help-heading"><h3>邀请好友，双方有礼</h3><button type="button" aria-label="关闭邀请" onClick={() => setInviteOpen(false)}>×</button></div>

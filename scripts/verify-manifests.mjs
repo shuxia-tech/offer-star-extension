@@ -26,6 +26,10 @@ const chrome = await readManifest(".output/chrome-mv3/manifest.json");
 const edge = await readManifest(".output/edge-mv3/manifest.json");
 const firefox = await readManifest(".output/firefox-mv2/manifest.json");
 
+for (const [name, manifest] of [["Chrome", chrome], ["Edge", edge], ["Firefox", firefox]]) {
+  assertCondition(manifest.content_scripts?.some((item) => item.all_frames === true && item.matches?.length === 1 && item.matches[0] === "https://jisuhaitou.gfjianli.com/*" && item.js?.includes("content-scripts/embedded-login.js")), `${name} 登录回调脚本必须只覆盖官网子框架`);
+}
+
 for (const [name, manifest] of [["Chrome", chrome], ["Edge", edge]]) {
   assertCondition(manifest.manifest_version === 3, `${name} 必须使用 Manifest V3`);
   assertCondition(!manifest.side_panel, `${name} 不得声明浏览器原生 Side Panel`);
